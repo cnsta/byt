@@ -3,6 +3,8 @@
 //! Activation is via `systemctl start/stop tailscaled` (matches the original
 //! script). State and metadata come from `tailscale status --json`.
 
+use std::path::PathBuf;
+
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -13,7 +15,6 @@ const SERVICE: &str = "tailscaled";
 const TAILSCALE: &str = "tailscale";
 const SYSTEMCTL: &str = "systemctl";
 
-/// Slice of `tailscale status --json` we care about.
 #[derive(Debug, Deserialize)]
 struct StatusJson {
     #[serde(rename = "BackendState")]
@@ -23,8 +24,18 @@ struct StatusJson {
 }
 
 pub async fn status() -> Result<Connection> {
-    let active = systemctl_is_active().await;
+    // If tailscale isn't installed at all, report the row as Unavailable
+    // rather than always showing as Inactive, gives the user a clear signal.
+    if !is_installed() {
+        return Ok(Connection {
+            name: "Tailscale".to_owned(),
+            kind: VpnKind::Tailscale,
+            state: ConnectionState::Unavailable,
+            detail: Some("not installed".to_owned()),
+        });
+    }
 
+    let active = systemctl_is_active().await;
     let detail = if active {
         match tailscale_status_json().await {
             Ok(json) => json.magic_dns_suffix,
@@ -40,7 +51,11 @@ pub async fn status() -> Result<Connection> {
     Ok(Connection {
         name: "Tailscale".to_owned(),
         kind: VpnKind::Tailscale,
-        state: if active { ConnectionState::Active } else { ConnectionState::Inactive },
+        state: if active {
+            ConnectionState::Active
+        } else {
+            ConnectionState::Inactive
+        },
         detail,
     })
 }
@@ -51,6 +66,13 @@ pub async fn start() -> Result<()> {
 
 pub async fn stop() -> Result<()> {
     sudo_systemctl(&["stop", SERVICE]).await
+}
+
+fn is_installed() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir: PathBuf| dir.join(TAILSCALE).is_file())
 }
 
 async fn systemctl_is_active() -> bool {
@@ -72,8 +94,6 @@ async fn tailscale_status_json() -> Result<StatusJson> {
         })?;
 
     if !output.status.success() {
-        // Backend may simply be "Stopped" — treat as no detail rather than a
-        // hard error. Surface non-zero only as a parse failure.
         return Err(Error::ParseOutput {
             cmd: "tailscale status --json",
             context: String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -82,7 +102,6 @@ async fn tailscale_status_json() -> Result<StatusJson> {
 
     let parsed: StatusJson = serde_json::from_slice(&output.stdout)?;
     if parsed.backend_state != "Running" {
-        // Not really an error; just no detail to show.
         return Ok(StatusJson {
             backend_state: parsed.backend_state,
             magic_dns_suffix: None,
@@ -91,8 +110,6 @@ async fn tailscale_status_json() -> Result<StatusJson> {
     Ok(parsed)
 }
 
-/// `systemctl` operations that mutate state require root. We call it via sudo
-/// and let the user authenticate (matches the original script).
 async fn sudo_systemctl(args: &[&str]) -> Result<()> {
     let mut cmd_args = vec!["systemctl"];
     cmd_args.extend_from_slice(args);
