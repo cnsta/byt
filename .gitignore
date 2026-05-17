@@ -1,0 +1,7 @@
+target/
+result/
+.direnv
+build/
+Cargo.lock.bak
+*.swp
+.envrc.local
