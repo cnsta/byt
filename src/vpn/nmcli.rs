@@ -1,6 +1,7 @@
-//! `nmcli` wrapper. We invoke it with `--terse --fields …` so the output is
+//! `nmcli` wrapper. We invoke it with `--terse --fields ...` so the output is
 //! machine-parseable: colon-separated, no headers, escaping `:` and `\`.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use tokio::process::Command;
@@ -10,37 +11,89 @@ use crate::vpn::{Connection, ConnectionState, VpnKind};
 
 const NMCLI: &str = "nmcli";
 
-/// List all WireGuard connections known to NetworkManager, marking each as
-/// active or inactive.
+// listing
+
 pub async fn wireguard_connections() -> Result<Vec<Connection>> {
     let all = run(&["-t", "-f", "NAME,TYPE", "connection", "show"]).await?;
     let active = run(&["-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).await?;
 
-    let active_names: Vec<&str> = active
+    let active_names: HashSet<&str> = active
         .lines()
-        .filter_map(|line| parse_name_type(line).filter(|(_, t)| *t == "wireguard").map(|(n, _)| n))
+        .filter_map(|line| {
+            parse_name_type(line)
+                .filter(|(_, t)| *t == "wireguard")
+                .map(|(n, _)| n)
+        })
+        .collect();
+
+    Ok(all
+        .lines()
+        .filter_map(|line| parse_name_type(line).filter(|(_, t)| *t == "wireguard"))
+        .map(|(name, _)| Connection {
+            name: name.to_owned(),
+            kind: VpnKind::WireGuard,
+            state: if active_names.contains(name) {
+                ConnectionState::Active
+            } else {
+                ConnectionState::Inactive
+            },
+            detail: None,
+        })
+        .collect())
+}
+
+/// List OpenVPN connections.
+///
+/// nmcli reports all VPN-plugin connections with `TYPE=vpn`.
+pub async fn openvpn_connections() -> Result<Vec<Connection>> {
+    let all = run(&["-t", "-f", "NAME,TYPE", "connection", "show"]).await?;
+    let active = run(&["-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).await?;
+
+    let active_vpn_names: HashSet<String> = active
+        .lines()
+        .filter_map(|line| {
+            parse_name_type(line)
+                .filter(|(_, t)| *t == "vpn")
+                .map(|(n, _)| n.to_owned())
+        })
+        .collect();
+
+    let candidates: Vec<String> = all
+        .lines()
+        .filter_map(|line| {
+            parse_name_type(line)
+                .filter(|(_, t)| *t == "vpn")
+                .map(|(n, _)| n.to_owned())
+        })
         .collect();
 
     let mut out = Vec::new();
-    for line in all.lines() {
-        let Some((name, kind)) = parse_name_type(line) else { continue };
-        if kind != "wireguard" {
+    for name in candidates {
+        if !is_openvpn(&name).await? {
             continue;
         }
-        let state = if active_names.contains(&name) {
+        let state = if active_vpn_names.contains(&name) {
             ConnectionState::Active
         } else {
             ConnectionState::Inactive
         };
         out.push(Connection {
-            name: name.to_owned(),
-            kind: VpnKind::WireGuard,
+            name,
+            kind: VpnKind::OpenVpn,
             state,
             detail: None,
         });
     }
     Ok(out)
 }
+
+async fn is_openvpn(name: &str) -> Result<bool> {
+    let out = run(&["-t", "-f", "vpn.service-type", "connection", "show", name]).await?;
+    // Output looks like: "vpn.service-type:org.freedesktop.NetworkManager.openvpn"
+    Ok(out.trim().ends_with(".openvpn"))
+}
+
+// mutation
 
 pub async fn connection_up(name: &str) -> Result<()> {
     run(&["connection", "up", name]).await?;
@@ -52,24 +105,30 @@ pub async fn connection_down(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Import a WireGuard `.conf` as a NetworkManager connection.
-///
-/// nmcli derives the connection name from the file stem. If `desired_name`
-/// differs, we rename it with a follow-up call.
 pub async fn import_wireguard(path: &Path, desired_name: &str) -> Result<()> {
-    let path_str = path.to_string_lossy();
-    run(&["connection", "import", "type", "wireguard", "file", &path_str]).await?;
+    import("wireguard", path, desired_name).await
+}
 
-    let imported_name = path
+pub async fn import_openvpn(path: &Path, desired_name: &str) -> Result<()> {
+    import("openvpn", path, desired_name).await
+}
+
+/// Shared import path. nmcli derives the connection name from the file stem
+/// and we rename via `connection modify` if a different name was requested.
+async fn import(plugin: &str, path: &Path, desired_name: &str) -> Result<()> {
+    let path_str = path.to_string_lossy();
+    run(&["connection", "import", "type", plugin, "file", &path_str]).await?;
+
+    let imported = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(desired_name);
 
-    if imported_name != desired_name {
+    if imported != desired_name {
         run(&[
             "connection",
             "modify",
-            imported_name,
+            imported,
             "connection.id",
             desired_name,
         ])
@@ -78,7 +137,8 @@ pub async fn import_wireguard(path: &Path, desired_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Run `nmcli` with the given args, returning stdout on success.
+// helpers
+
 async fn run(args: &[&str]) -> Result<String> {
     let output = Command::new(NMCLI)
         .args(args)
@@ -99,11 +159,6 @@ async fn run(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Parse a `NAME:TYPE` line from `nmcli -t`. Returns `None` for blanks.
-///
-/// nmcli's terse format escapes `:` as `\:` and `\` as `\\`. We split on the
-/// last *unescaped* colon. For our purposes (TYPE is always one of a small
-/// fixed set with no `:` in it), splitting on the final `:` works.
 fn parse_name_type(line: &str) -> Option<(&str, &str)> {
     if line.is_empty() {
         return None;
@@ -114,13 +169,21 @@ fn parse_name_type(line: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use pretty_assertions::assert_eq;
+
+    use super::*;
 
     #[test]
     fn parses_terse_line() {
-        assert_eq!(parse_name_type("home-vpn:wireguard"), Some(("home-vpn", "wireguard")));
-        assert_eq!(parse_name_type("wired:802-3-ethernet"), Some(("wired", "802-3-ethernet")));
+        assert_eq!(
+            parse_name_type("home-vpn:wireguard"),
+            Some(("home-vpn", "wireguard"))
+        );
+        assert_eq!(parse_name_type("my-ovpn:vpn"), Some(("my-ovpn", "vpn")));
+        assert_eq!(
+            parse_name_type("wired:802-3-ethernet"),
+            Some(("wired", "802-3-ethernet"))
+        );
         assert_eq!(parse_name_type(""), None);
     }
 }
