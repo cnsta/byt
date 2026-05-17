@@ -1,16 +1,15 @@
 //! VPN abstraction.
 //!
 //! Public surface:
-//! - [`Connection`], [`ConnectionState`], [`VpnKind`] — data the UI renders.
+//! - [`Connection`], [`ConnectionState`], [`VpnKind`], [`ConfigKind`] —
+//!   data the UI renders.
 //! - [`snapshot`] — query current state across all backends.
 //! - [`activate_exclusive`] — bring one connection up, ensuring others are down.
 //! - [`disconnect_all`] — tear everything down.
 //! - [`detect_config_kind`] — sniff WireGuard vs OpenVPN from a config file.
-//!
-//! Backends (`nmcli`, `tailscale`, `wireguard`, `openvpn`) are crate-internal;
-//! the UI never imports them directly so we can swap implementations later.
 
-pub mod nmcli;
+pub mod import;
+pub mod nm;
 pub mod openvpn;
 pub mod tailscale;
 pub mod wireguard;
@@ -30,7 +29,7 @@ pub struct Connection {
     pub name: String,
     pub kind: VpnKind,
     pub state: ConnectionState,
-    /// Free-form detail shown in the UI (e.g. tailnet name, endpoint).
+    /// Free-form detail shown in the UI (e.g. tailnet name).
     pub detail: Option<String>,
 }
 
@@ -74,14 +73,22 @@ pub enum ConnectionState {
     Unavailable,
 }
 
-/// Which config format an imported file uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigKind {
     WireGuard,
     OpenVpn,
 }
 
-/// Sniff a config file to determine whether it's wireguqard or openvpn.
+impl ConfigKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfigKind::WireGuard => "wireguard",
+            ConfigKind::OpenVpn => "openvpn",
+        }
+    }
+}
+
 pub fn detect_config_kind(path: &Path) -> Result<ConfigKind> {
     let raw = std::fs::read_to_string(path)?;
     for line in raw.lines().take(100) {
@@ -109,39 +116,22 @@ pub fn detect_config_kind(path: &Path) -> Result<ConfigKind> {
 }
 
 fn strip_comment(line: &str) -> &str {
-    if let Some(idx) = line.find(['#', ';']) {
-        &line[..idx]
-    } else {
-        line
-    }
+    line.find(['#', ';']).map_or(line, |idx| &line[..idx])
 }
 
-/// Query every backend and return a unified snapshot.
-///
-/// Backends are queried concurrently; ordering in the result is fixed.
-/// Tailscale > wg > openvpn
 pub async fn snapshot() -> Result<Snapshot> {
-    let (ts, wg, ovpn) = tokio::join!(
-        tailscale::status(),
-        nmcli::wireguard_connections(),
-        nmcli::openvpn_connections(),
-    );
+    let (ts, nm_list) = tokio::join!(tailscale::status(), nm::list());
 
     let mut connections = Vec::new();
     connections.push(ts?);
 
-    let mut wg = wg?;
-    wg.sort_by(|a, b| a.name.cmp(&b.name));
-    connections.extend(wg);
-
-    let mut ovpn = ovpn?;
-    ovpn.sort_by(|a, b| a.name.cmp(&b.name));
-    connections.extend(ovpn);
+    let mut nm_list = nm_list?;
+    nm_list.sort_by(|a, b| (a.kind.as_str(), &a.name).cmp(&(b.kind.as_str(), &b.name)));
+    connections.extend(nm_list);
 
     Ok(Snapshot { connections })
 }
 
-/// Bring `target` up and bring everything else down. Idempotent.
 pub async fn activate_exclusive(target: &Connection) -> Result<()> {
     if target.state == ConnectionState::Unavailable {
         return Err(Error::Unavailable {
@@ -150,7 +140,6 @@ pub async fn activate_exclusive(target: &Connection) -> Result<()> {
     }
 
     let snap = snapshot().await?;
-
     let exclusive = snap.connections.iter().all(|c| {
         if c.name == target.name && c.kind == target.kind {
             c.state == ConnectionState::Active
@@ -162,7 +151,12 @@ pub async fn activate_exclusive(target: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    bring_others_down(&snap, target).await?;
+    for c in &snap.connections {
+        if (c.name == target.name && c.kind == target.kind) || c.state != ConnectionState::Active {
+            continue;
+        }
+        bring_down(c).await?;
+    }
     bring_up(target).await
 }
 
@@ -176,28 +170,23 @@ pub async fn disconnect_all() -> Result<()> {
     Ok(())
 }
 
-async fn bring_others_down(snap: &Snapshot, target: &Connection) -> Result<()> {
-    for c in &snap.connections {
-        if (c.name == target.name && c.kind == target.kind) || c.state != ConnectionState::Active {
-            continue;
-        }
-        bring_down(c).await?;
-    }
-    Ok(())
-}
-
 async fn bring_up(c: &Connection) -> Result<()> {
     match c.kind {
         VpnKind::Tailscale => tailscale::start().await,
-        // Openvpn and wg connections are both managed by networkmanager
-        // and brought up identically by name.
-        VpnKind::WireGuard | VpnKind::OpenVpn => nmcli::connection_up(&c.name).await,
+        VpnKind::WireGuard | VpnKind::OpenVpn => nm::activate(&c.name).await,
     }
 }
 
 async fn bring_down(c: &Connection) -> Result<()> {
     match c.kind {
         VpnKind::Tailscale => tailscale::stop().await,
-        VpnKind::WireGuard | VpnKind::OpenVpn => nmcli::connection_down(&c.name).await,
+        VpnKind::WireGuard | VpnKind::OpenVpn => nm::deactivate(&c.name).await,
     }
 }
+
+// Re-exports for convenience
+pub use openvpn::OvpnPreview;
+pub use wireguard::WgPreview;
+
+#[allow(dead_code)]
+pub type ConfigPath = PathBuf;
