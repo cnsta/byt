@@ -6,9 +6,11 @@
 
 use std::path::PathBuf;
 
-use iced::keyboard::{self, Key, Modifiers};
+use iced::event::{self, Status};
+use iced::keyboard::key::Named;
+use iced::keyboard::{Key, Modifiers};
 use iced::widget::{Space, button, column, container, row, scrollable, text};
-use iced::{Color, Element, Length, Subscription, Task, Theme};
+use iced::{Color, Element, Event, Length, Subscription, Task, Theme};
 
 use crate::vpn::{self, Connection, ConnectionState, Snapshot, VpnKind};
 
@@ -17,34 +19,23 @@ pub struct App {
     snapshot: Snapshot,
     selected: usize,
     /// Name of the connection currently being acted on (activate/deactivate).
-    /// Used to disable input and show a spinner-ish indicator for that row.
     pending: Option<String>,
     status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    // state
-    /// Re-query the world. Emitted by the tick, the change-stream subscription,
-    /// and after any mutation completes.
     Refresh,
     SnapshotReady(Result<Snapshot, String>),
-
-    // selection
     SelectPrev,
     SelectNext,
     SelectIndex(usize),
-
-    // actions
     ActivateSelected,
     DisconnectAll,
     StartImport,
-
-    // async completions
     FileChosen(Option<PathBuf>),
     OperationDone(Result<String, String>),
 
-    // meta
     Quit,
 }
 
@@ -127,7 +118,7 @@ impl App {
                 if self.pending.is_some() {
                     return Task::none();
                 }
-                self.pending = Some(String::new()); // "all"
+                self.pending = Some(String::new());
                 Task::perform(
                     async {
                         vpn::disconnect_all()
@@ -196,7 +187,7 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let header = row![
             text("byt").size(28),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             action_button("Import (i)", Message::StartImport, self.pending.is_some()),
             action_button(
                 "Disconnect all (d)",
@@ -244,24 +235,31 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
-            keyboard::on_key_press(handle_key),
-            // D-Bus change-signal subscription: emits Refresh whenever NM
-            // or systemd tells us something changed.
-            Subscription::run(change_stream),
-        ])
+        Subscription::batch([keyboard_subscription(), Subscription::run(change_stream)])
     }
 }
 
-// keyboard
+// subscriptions
+fn keyboard_subscription() -> Subscription<Message> {
+    event::listen_with(|event, status, _id| {
+        if status == Status::Captured {
+            return None;
+        }
+        if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event {
+            handle_key(key, modifiers)
+        } else {
+            None
+        }
+    })
+}
 
 fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
     match key.as_ref() {
-        Key::Named(keyboard::key::Named::ArrowUp) => Some(Message::SelectPrev),
-        Key::Named(keyboard::key::Named::ArrowDown) => Some(Message::SelectNext),
-        Key::Named(keyboard::key::Named::Enter) => Some(Message::ActivateSelected),
-        Key::Named(keyboard::key::Named::Escape) => Some(Message::Quit),
-        Key::Character(c) => match c.as_str() {
+        Key::Named(Named::ArrowUp) => Some(Message::SelectPrev),
+        Key::Named(Named::ArrowDown) => Some(Message::SelectNext),
+        Key::Named(Named::Enter) => Some(Message::ActivateSelected),
+        Key::Named(Named::Escape) => Some(Message::Quit),
+        Key::Character(c) => match c {
             "k" => Some(Message::SelectPrev),
             "j" => Some(Message::SelectNext),
             "d" => Some(Message::DisconnectAll),
@@ -275,11 +273,7 @@ fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
     }
 }
 
-// change-stream subscription
-
-/// Background stream that emits `Refresh` whenever NetworkManager or systemd
-/// signals a state change. Uses iceds `stream::channel` so dropped messages
-/// (a burst of signals during activation, say) dont pile up.
+/// Background stream emitting `Refresh` whenever NM or systemd signal a change.
 fn change_stream() -> impl futures::Stream<Item = Message> {
     use futures::SinkExt;
     use futures::StreamExt;
@@ -300,8 +294,7 @@ fn change_stream() -> impl futures::Stream<Item = Message> {
     })
 }
 
-// widgets
-
+//  widgets
 fn action_button<'a>(label: &'a str, msg: Message, disabled: bool) -> Element<'a, Message> {
     let b = button(text(label).size(13)).padding([6, 12]);
     if disabled {
@@ -332,13 +325,13 @@ fn connection_row<'a>(
     let pending_marker: Element<'_, Message> = if pending {
         text("…").size(20).into()
     } else {
-        Space::with_width(Length::Shrink).into()
+        Space::new().into()
     };
 
     let inner = row![
         text(mark).color(mark_color).size(22),
         column![text(&c.name).size(16), text(detail).size(12)].spacing(2),
-        Space::with_width(Length::Fill),
+        Space::new().width(Length::Fill),
         pending_marker,
     ]
     .spacing(12)
@@ -362,8 +355,6 @@ fn kind_label(k: VpnKind) -> &'static str {
     }
 }
 
-/// Selected rows get a subtle highlight from the theme palette. Hover and
-/// press behave like a normal button but with the highlight retained.
 fn row_button_style(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     let palette = theme.extended_palette();
     let base = if selected {

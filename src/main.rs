@@ -43,10 +43,11 @@ where
 fn run_gui() -> color_eyre::Result<()> {
     let _guard = lock::acquire().wrap_err("could not acquire single-instance lock")?;
 
-    iced::application(app::App::title, app::App::update, app::App::view)
+    iced::application(app::App::new, app::App::update, app::App::view)
+        .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(app::App::theme)
-        .run_with(app::App::new)
+        .run()
         .wrap_err("iced failed to start")?;
 
     drop(_guard);

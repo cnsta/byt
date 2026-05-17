@@ -15,7 +15,7 @@ pub mod tailscale;
 pub mod wireguard;
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::error::{Error, Result};
 
@@ -29,7 +29,6 @@ pub struct Connection {
     pub name: String,
     pub kind: VpnKind,
     pub state: ConnectionState,
-    /// Free-form detail shown in the UI (e.g. tailnet name).
     pub detail: Option<String>,
 }
 
@@ -183,10 +182,3 @@ async fn bring_down(c: &Connection) -> Result<()> {
         VpnKind::WireGuard | VpnKind::OpenVpn => nm::deactivate(&c.name).await,
     }
 }
-
-// Re-exports for convenience
-pub use openvpn::OvpnPreview;
-pub use wireguard::WgPreview;
-
-#[allow(dead_code)]
-pub type ConfigPath = PathBuf;

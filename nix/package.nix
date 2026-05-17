@@ -1,19 +1,37 @@
 {
   lib,
-  udev,
-  pkg-config,
   rustPlatform,
-  dbus,
+  pkg-config,
   makeWrapper,
+
+  libxkbcommon,
+  wayland,
+  vulkan-loader,
+  libGL,
+  fontconfig,
+  freetype,
+  xorg,
+
   rev ? "dirty",
 }:
+
 let
   cargoToml = lib.importTOML ../Cargo.toml;
-  runtimeDeps = [
-    udev
-    dbus
+
+  runtimeLibs = [
+    libxkbcommon
+    wayland
+    vulkan-loader
+    libGL
+    fontconfig
+    freetype
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXi
+    xorg.libXrandr
   ];
 in
+
 rustPlatform.buildRustPackage {
   pname = "byt";
   version = "${cargoToml.package.version}-${rev}";
@@ -22,35 +40,34 @@ rustPlatform.buildRustPackage {
     root = ../.;
     fileset = lib.fileset.unions [
       ../src
-      ../assets
-      ../build.rs
       ../Cargo.lock
       ../Cargo.toml
     ];
   };
 
   cargoLock.lockFile = ../Cargo.lock;
+
   strictDeps = true;
 
   nativeBuildInputs = [
     pkg-config
-    rustPlatform.bindgenHook
     makeWrapper
   ];
 
-  buildInputs = runtimeDeps;
+  buildInputs = runtimeLibs;
 
-  postInstall = ''
-    for bin in $out/bin/*; do
-      wrapProgram $bin \
-        --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeDeps}"
-    done
+  postFixup = ''
+    wrapProgram $out/bin/byt \
+      --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}"
   '';
 
   meta = {
-    description = "byt: basic vpn switcher";
+    description = "Simple VPN switcher for Linux (NetworkManager + Tailscale)";
     longDescription = ''
-      Somethingsomethingvpnswitcher
+      byt is a small Linux app for switching between NetworkManager-managed
+      VPN connections (WireGuard and OpenVPN) and Tailscale. Provides a
+      keyboard-driven iced GUI and a CLI (`byt status`, `byt import`) for
+      scripting.
     '';
     homepage = "https://github.com/cnsta/byt";
     license = lib.licenses.mit;
