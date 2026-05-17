@@ -1,0 +1,62 @@
+//! Config file import via `nmcli connection import`.
+//!
+//! Use nmcli for importing configuration files.
+//! Everything else (listing, activating, deactivating, watching) goes through
+//! [`crate::vpn::nm`] over dbus.
+
+use std::path::Path;
+
+use tokio::process::Command;
+
+use crate::error::{Error, Result};
+use crate::vpn::ConfigKind;
+
+const NMCLI: &str = "nmcli";
+
+pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result<()> {
+    let plugin = match kind {
+        ConfigKind::WireGuard => "wireguard",
+        ConfigKind::OpenVpn => "openvpn",
+    };
+    let path_str = path.to_string_lossy();
+
+    nmcli(&["connection", "import", "type", plugin, "file", &path_str]).await?;
+
+    // nmcli names the connection after the file's stem; rename if needed.
+    let imported = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(desired_name);
+
+    if imported != desired_name {
+        nmcli(&[
+            "connection",
+            "modify",
+            imported,
+            "connection.id",
+            desired_name,
+        ])
+        .await?;
+    }
+    Ok(())
+}
+
+async fn nmcli(args: &[&str]) -> Result<String> {
+    let output = Command::new(NMCLI)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::MissingExecutable(NMCLI),
+            _ => Error::Io(e),
+        })?;
+
+    if !output.status.success() {
+        return Err(Error::CommandFailed {
+            cmd: format!("{NMCLI} {}", args.join(" ")),
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}

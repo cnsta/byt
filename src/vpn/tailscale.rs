@@ -1,19 +1,41 @@
 //! Tailscale wrapper.
 //!
-//! Activation is via `systemctl start/stop tailscaled` (matches the original
-//! script). State and metadata come from `tailscale status --json`.
+//! `start` / `stop` go through systemd's dbus API (polkit-mediated, no sudo
+//! prompt). `tailscale status --json` stays a subprocess call, it doesn't
+//! need elevation and the local API socket isn't a stable third-party interface.
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 use tokio::process::Command;
+use zbus::proxy;
+use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 use crate::error::{Error, Result};
 use crate::vpn::{Connection, ConnectionState, VpnKind};
 
-const SERVICE: &str = "tailscaled";
+const SERVICE: &str = "tailscaled.service";
 const TAILSCALE: &str = "tailscale";
-const SYSTEMCTL: &str = "systemctl";
+
+#[proxy(
+    interface = "org.freedesktop.systemd1.Manager",
+    default_service = "org.freedesktop.systemd1",
+    default_path = "/org/freedesktop/systemd1"
+)]
+trait SystemdManager {
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn get_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+}
+
+#[proxy(
+    interface = "org.freedesktop.systemd1.Unit",
+    default_service = "org.freedesktop.systemd1"
+)]
+trait SystemdUnit {
+    #[zbus(property)]
+    fn active_state(&self) -> zbus::Result<String>;
+}
 
 #[derive(Debug, Deserialize)]
 struct StatusJson {
@@ -24,8 +46,6 @@ struct StatusJson {
 }
 
 pub async fn status() -> Result<Connection> {
-    // If tailscale isn't installed at all, report the row as Unavailable
-    // rather than always showing as Inactive, gives the user a clear signal.
     if !is_installed() {
         return Ok(Connection {
             name: "Tailscale".to_owned(),
@@ -35,10 +55,12 @@ pub async fn status() -> Result<Connection> {
         });
     }
 
-    let active = systemctl_is_active().await;
+    let active = is_unit_active().await.unwrap_or(false);
+
     let detail = if active {
         match tailscale_status_json().await {
-            Ok(json) => json.magic_dns_suffix,
+            Ok(json) if json.backend_state == "Running" => json.magic_dns_suffix,
+            Ok(_) => None,
             Err(err) => {
                 tracing::warn!(?err, "tailscale status --json failed");
                 None
@@ -61,11 +83,36 @@ pub async fn status() -> Result<Connection> {
 }
 
 pub async fn start() -> Result<()> {
-    sudo_systemctl(&["start", SERVICE]).await
+    let bus = zbus::Connection::system().await?;
+    let mgr = SystemdManagerProxy::new(&bus).await?;
+    // "replace" cancels any queued jobs for this unit and queues ours.
+    mgr.start_unit(SERVICE, "replace").await?;
+    Ok(())
 }
 
 pub async fn stop() -> Result<()> {
-    sudo_systemctl(&["stop", SERVICE]).await
+    let bus = zbus::Connection::system().await?;
+    let mgr = SystemdManagerProxy::new(&bus).await?;
+    mgr.stop_unit(SERVICE, "replace").await?;
+    Ok(())
+}
+
+async fn is_unit_active() -> Result<bool> {
+    let bus = zbus::Connection::system().await?;
+    let mgr = SystemdManagerProxy::new(&bus).await?;
+
+    // GetUnit returns the loaded unit's object path, or a dbus error if the
+    // unit isn't loaded at all.
+    let Ok(unit_path) = mgr.get_unit(SERVICE).await else {
+        return Ok(false);
+    };
+
+    let unit = SystemdUnitProxy::builder(&bus)
+        .path(unit_path)?
+        .build()
+        .await?;
+    let state = unit.active_state().await?;
+    Ok(state == "active")
 }
 
 fn is_installed() -> bool {
@@ -73,14 +120,6 @@ fn is_installed() -> bool {
         return false;
     };
     std::env::split_paths(&path).any(|dir: PathBuf| dir.join(TAILSCALE).is_file())
-}
-
-async fn systemctl_is_active() -> bool {
-    let result = Command::new(SYSTEMCTL)
-        .args(["is-active", "--quiet", SERVICE])
-        .status()
-        .await;
-    matches!(result, Ok(s) if s.success())
 }
 
 async fn tailscale_status_json() -> Result<StatusJson> {
@@ -94,41 +133,15 @@ async fn tailscale_status_json() -> Result<StatusJson> {
         })?;
 
     if !output.status.success() {
-        return Err(Error::ParseOutput {
-            cmd: "tailscale status --json",
-            context: String::from_utf8_lossy(&output.stderr).into_owned(),
-        });
-    }
-
-    let parsed: StatusJson = serde_json::from_slice(&output.stdout)?;
-    if parsed.backend_state != "Running" {
-        return Ok(StatusJson {
-            backend_state: parsed.backend_state,
-            magic_dns_suffix: None,
-        });
-    }
-    Ok(parsed)
-}
-
-async fn sudo_systemctl(args: &[&str]) -> Result<()> {
-    let mut cmd_args = vec!["systemctl"];
-    cmd_args.extend_from_slice(args);
-
-    let output = Command::new("sudo")
-        .args(&cmd_args)
-        .output()
-        .await
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::MissingExecutable("sudo"),
-            _ => Error::Io(e),
-        })?;
-
-    if !output.status.success() {
         return Err(Error::CommandFailed {
-            cmd: format!("sudo {}", cmd_args.join(" ")),
+            cmd: format!("{TAILSCALE} status --json"),
             status: output.status.code().unwrap_or(-1),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    Ok(())
+
+    Ok(serde_json::from_slice(&output.stdout)?)
 }
+
+#[allow(dead_code)]
+fn _force_unused_object_path_use(_p: ObjectPath<'_>) {}
