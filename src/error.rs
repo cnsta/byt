@@ -1,7 +1,4 @@
-//! Crate-wide error type and `Result` alias.
-//!
-//! Library-style code returns [`Error`]. The binary entrypoint converts these
-//! into `color_eyre::Report` for pretty terminal output.
+//! Crate-wide error type and `Result` alias
 
 use std::path::PathBuf;
 
@@ -11,6 +8,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("D-Bus error: {0}")]
+    DBus(#[from] zbus::Error),
+
+    #[error("D-Bus value conversion failed: {0}")]
+    DBusValue(String),
+
     #[error("required executable not found: `{0}`. Is it installed and on PATH?")]
     MissingExecutable(&'static str),
 
@@ -21,11 +24,19 @@ pub enum Error {
         stderr: String,
     },
 
-    #[error("could not parse output of `{cmd}`: {context}")]
-    ParseOutput { cmd: &'static str, context: String },
-
     #[error("invalid config at {path}: {context}")]
     InvalidConfig { path: PathBuf, context: String },
+
+    #[error("connection `{0}` not found")]
+    NotFound(String),
+
+    #[error(
+        "activation needs secrets that aren't stored. Set them with:\n  \
+         nmcli connection modify '{name}' vpn.user-name '<username>'\n  \
+         nmcli connection modify '{name}' +vpn.data password-flags=0\n  \
+         nmcli connection modify '{name}' vpn.secrets password='<password>'"
+    )]
+    SecretsRequired { name: String },
 
     #[error("{kind} backend is not available on this system")]
     Unavailable { kind: &'static str },
