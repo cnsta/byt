@@ -24,8 +24,11 @@ pub enum Error {
     #[error("could not parse output of `{cmd}`: {context}")]
     ParseOutput { cmd: &'static str, context: String },
 
-    #[error("invalid WireGuard config at {path}: {context}")]
+    #[error("invalid config at {path}: {context}")]
     InvalidConfig { path: PathBuf, context: String },
+
+    #[error("{kind} backend is not available on this system")]
+    Unavailable { kind: &'static str },
 
     #[error("another instance is already running")]
     AlreadyRunning,
