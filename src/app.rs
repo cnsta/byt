@@ -15,6 +15,9 @@ use iced::{Color, Element, Event, Length, Subscription, Task, Theme};
 use crate::vpn::{self, Connection, ConnectionState, Snapshot, VpnKind};
 
 const LOGO_BYTES: &[u8] = include_bytes!("../assets/byt.svg");
+const ICON_IMPORT: &[u8] = include_bytes!("../assets/import.svg");
+const ICON_DISCONNECT: &[u8] = include_bytes!("../assets/disconnect.svg");
+const ICON_REFRESH: &[u8] = include_bytes!("../assets/refresh.svg");
 
 #[derive(Debug, Default)]
 pub struct App {
@@ -192,9 +195,9 @@ impl App {
                 .width(Length::Fixed(56.0))
                 .height(Length::Fixed(30.0)),
             Space::new().width(Length::Fill),
-            action_button("Import", Message::StartImport, self.pending.is_some()),
-            action_button("Disconnect", Message::Disconnect, self.pending.is_some()),
-            action_button("Refresh", Message::Refresh, false),
+            icon_button(ICON_IMPORT, Message::StartImport, self.pending.is_some()),
+            icon_button(ICON_DISCONNECT, Message::Disconnect, self.pending.is_some()),
+            icon_button(ICON_REFRESH, Message::Refresh, false),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center)
@@ -294,8 +297,27 @@ fn change_stream() -> impl futures::Stream<Item = Message> {
 }
 
 //  widgets
-fn action_button<'a>(label: &'a str, msg: Message, disabled: bool) -> Element<'a, Message> {
-    let b = button(text(label).size(13)).padding([6, 12]);
+fn icon_button<'a>(
+    icon_bytes: &'static [u8],
+    msg: Message,
+    disabled: bool,
+) -> Element<'a, Message> {
+    let icon = svg(svg::Handle::from_memory(icon_bytes))
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .style(move |theme: &Theme, _status| {
+            let mut color = theme.extended_palette().background.base.text;
+            if disabled {
+                color.a = 0.4;
+            }
+            svg::Style { color: Some(color) }
+        });
+
+    let b = button(container(icon).center(Length::Fill))
+        .width(Length::Fixed(36.0))
+        .height(Length::Fixed(36.0))
+        .style(icon_button_style);
+
     if disabled {
         b.into()
     } else {
@@ -351,6 +373,36 @@ fn kind_label(k: VpnKind) -> &'static str {
         VpnKind::Tailscale => "Tailscale",
         VpnKind::WireGuard => "WireGuard",
         VpnKind::OpenVpn => "OpenVPN",
+    }
+}
+
+fn icon_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let (background, text_color) = match status {
+        button::Status::Hovered => (
+            Some(palette.background.weak.color.into()),
+            palette.background.weak.text,
+        ),
+        button::Status::Pressed => (
+            Some(palette.background.strong.color.into()),
+            palette.background.strong.text,
+        ),
+        button::Status::Disabled => {
+            let mut faded = palette.background.base.text;
+            faded.a = 0.4;
+            (None, faded)
+        }
+        button::Status::Active => (None, palette.background.base.text),
+    };
+
+    button::Style {
+        background,
+        text_color,
+        border: iced::Border {
+            radius: f32::INFINITY.into(),
+            ..iced::Border::default()
+        },
+        ..button::Style::default()
     }
 }
 
