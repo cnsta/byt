@@ -43,6 +43,7 @@ rustPlatform.buildRustPackage {
     root = ../.;
     fileset = lib.fileset.unions [
       ../src
+      ../assets
       ../Cargo.lock
       ../Cargo.toml
     ];

@@ -5,7 +5,7 @@
 //!   data the UI renders.
 //! - [`snapshot`] — query current state across all backends.
 //! - [`activate_exclusive`] — bring one connection up, ensuring others are down.
-//! - [`disconnect_all`] — tear everything down.
+//! - [`disconnect`] — tear everything down.
 //! - [`detect_config_kind`] — sniff WireGuard vs OpenVPN from a config file.
 
 pub mod import;
@@ -159,7 +159,7 @@ pub async fn activate_exclusive(target: &Connection) -> Result<()> {
     bring_up(target).await
 }
 
-pub async fn disconnect_all() -> Result<()> {
+pub async fn disconnect() -> Result<()> {
     let snap = snapshot().await?;
     for c in &snap.connections {
         if c.state == ConnectionState::Active {

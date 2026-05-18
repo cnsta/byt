@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use iced::event::{self, Status};
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, scrollable, svg, text};
 use iced::{Color, Element, Event, Length, Subscription, Task, Theme};
 
 use crate::vpn::{self, Connection, ConnectionState, Snapshot, VpnKind};
+
+const LOGO_BYTES: &[u8] = include_bytes!("../assets/byt.svg");
 
 #[derive(Debug, Default)]
 pub struct App {
@@ -31,7 +33,7 @@ pub enum Message {
     SelectNext,
     SelectIndex(usize),
     ActivateSelected,
-    DisconnectAll,
+    Disconnect,
     StartImport,
     FileChosen(Option<PathBuf>),
     OperationDone(Result<String, String>),
@@ -49,7 +51,7 @@ impl App {
     }
 
     pub fn theme(&self) -> Theme {
-        Theme::TokyoNightStorm
+        Theme::Ferra
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -114,16 +116,16 @@ impl App {
                 )
             }
 
-            Message::DisconnectAll => {
+            Message::Disconnect => {
                 if self.pending.is_some() {
                     return Task::none();
                 }
                 self.pending = Some(String::new());
                 Task::perform(
                     async {
-                        vpn::disconnect_all()
+                        vpn::disconnect()
                             .await
-                            .map(|()| "all disconnected".to_owned())
+                            .map(|()| "disconnected".to_owned())
                             .map_err(|e| e.to_string())
                     },
                     Message::OperationDone,
@@ -186,15 +188,13 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let header = row![
-            text("byt").size(28),
+            svg(svg::Handle::from_memory(LOGO_BYTES))
+                .width(Length::Fixed(56.0))
+                .height(Length::Fixed(30.0)),
             Space::new().width(Length::Fill),
-            action_button("Import (i)", Message::StartImport, self.pending.is_some()),
-            action_button(
-                "Disconnect all (d)",
-                Message::DisconnectAll,
-                self.pending.is_some()
-            ),
-            action_button("Refresh (r)", Message::Refresh, false),
+            action_button("Import", Message::StartImport, self.pending.is_some()),
+            action_button("Disconnect", Message::Disconnect, self.pending.is_some()),
+            action_button("Refresh", Message::Refresh, false),
         ]
         .spacing(8)
         .align_y(iced::Alignment::Center)
@@ -220,8 +220,7 @@ impl App {
         };
 
         let hint = self.status.clone().unwrap_or_else(|| {
-            "↑/↓ or j/k select • Enter connect • d disconnect all • i import • r refresh • q quit"
-                .to_owned()
+            "↑/↓ or j/k select • (d)isconnect • (i)mport • (r)efresh • (q)uit".to_owned()
         });
 
         let footer = container(text(hint).size(13))
@@ -262,7 +261,7 @@ fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
         Key::Character(c) => match c {
             "k" => Some(Message::SelectPrev),
             "j" => Some(Message::SelectNext),
-            "d" => Some(Message::DisconnectAll),
+            "d" => Some(Message::Disconnect),
             "i" => Some(Message::StartImport),
             "r" => Some(Message::Refresh),
             "q" => Some(Message::Quit),

@@ -11,7 +11,7 @@ keywords = ["vpn", "tui", "wireguard", "tailscale", "networkmanager"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-iced = { version = "0.14", features = ["tokio", "advanced"] }
+iced = { version = "0.14", features = ["tokio", "advanced", "svg"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 zbus = { version = "5.15", default-features = false, features = ["tokio"] }
 zvariant = "5"
