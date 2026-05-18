@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use futures::stream::{BoxStream, select_all};
 use futures::{Stream, StreamExt};
 use zbus::proxy;
+use zbus::proxy::MethodFlags;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
 use crate::error::{Error, Result};
@@ -129,7 +130,16 @@ pub async fn activate(connection_id: &str) -> Result<()> {
     let path = find_path_by_id(&bus, &settings, connection_id).await?;
     let root = ObjectPath::try_from("/").expect("`/` is a valid object path");
 
-    match nm.activate_connection(&path.as_ref(), &root, &root).await {
+    let result: zbus::Result<Option<OwnedObjectPath>> = nm
+        .inner()
+        .call_with_flags(
+            "ActivateConnection",
+            MethodFlags::AllowInteractiveAuth.into(),
+            &(path.as_ref(), &root, &root),
+        )
+        .await;
+
+    match result {
         Ok(_) => Ok(()),
         Err(err) if looks_like_secrets_error(&err) => Err(Error::SecretsRequired {
             name: connection_id.to_owned(),
@@ -148,7 +158,14 @@ pub async fn deactivate(connection_id: &str) -> Result<()> {
             .build()
             .await?;
         if ac.id().await? == connection_id {
-            nm.deactivate_connection(&ac_path.as_ref()).await?;
+            let _: Option<()> = nm
+                .inner()
+                .call_with_flags(
+                    "DeactivateConnection",
+                    MethodFlags::AllowInteractiveAuth.into(),
+                    &(ac_path.as_ref(),),
+                )
+                .await?;
             return Ok(());
         }
     }

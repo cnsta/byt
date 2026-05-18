@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use tokio::process::Command;
 use zbus::proxy;
+use zbus::proxy::MethodFlags;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 use crate::error::{Error, Result};
@@ -85,15 +86,28 @@ pub async fn status() -> Result<Connection> {
 pub async fn start() -> Result<()> {
     let bus = zbus::Connection::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
-    // "replace" cancels any queued jobs for this unit and queues ours.
-    mgr.start_unit(SERVICE, "replace").await?;
+    let _: Option<OwnedObjectPath> = mgr
+        .inner()
+        .call_with_flags(
+            "StartUnit",
+            MethodFlags::AllowInteractiveAuth.into(),
+            &(SERVICE, "replace"),
+        )
+        .await?;
     Ok(())
 }
 
 pub async fn stop() -> Result<()> {
     let bus = zbus::Connection::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
-    mgr.stop_unit(SERVICE, "replace").await?;
+    let _: Option<OwnedObjectPath> = mgr
+        .inner()
+        .call_with_flags(
+            "StopUnit",
+            MethodFlags::AllowInteractiveAuth.into(),
+            &(SERVICE, "replace"),
+        )
+        .await?;
     Ok(())
 }
 
