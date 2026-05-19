@@ -9,19 +9,16 @@
 ---
 
 `byt` swaps between NetworkManager-managed VPNs (WireGuard, OpenVPN) and
-Tailscale from a small Iced GUI or the command line. Pick one, the others go
-down — no fighting over the default route.
-
-> _byt_ — Swedish: imperative of _byta_, "swap".
+Tailscale from a small Iced GUI or the command line.
 
 ## Features
 
-- Iced GUI with full keyboard navigation
+- Iced GUI with keyboard navigation in mind
 - WireGuard and OpenVPN via NetworkManager (D-Bus, polkit-authenticated)
 - Tailscale via systemd
 - Mutual exclusion: activating one VPN deactivates the others
 - Import provider configs: `byt import path/to/provider.conf`
-- Live state via NetworkManager D-Bus signals — no polling
+- Live state via NetworkManager D-Bus signals, no polling
 - Single-instance lock
 
 ## Requirements
@@ -31,13 +28,12 @@ down — no fighting over the default route.
 - For OpenVPN: the `NetworkManager-openvpn` plugin
 - For Tailscale (optional): `tailscale` and `tailscaled`
 - A running polkit authentication agent (most desktops include one)
-- A Nerd Font for the toolbar icons
 
 ## Usage
 
 ```sh
-byt              # open the GUI
-byt status       # print current VPN state
+byt                  # open the GUI
+byt status           # print current VPN state
 byt import foo.conf
 byt --help
 ```
