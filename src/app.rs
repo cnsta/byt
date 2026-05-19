@@ -306,7 +306,7 @@ impl App {
             if is_dialog_open {
                 "y/Enter confirm • n/Esc cancel".to_owned()
             } else {
-                "↑/↓ select • (d)elete • (x)disconnect • (i)mport • (r)efresh • (q)uit".to_owned()
+                "↑/↓ select • (x)disconnect • (i)mport • (d)elete • (r)efresh • (q)uit".to_owned()
             }
         });
 
