@@ -80,3 +80,13 @@ cargo build --release
 
 Sample configs in `doc/examples/` if you want to try the import flow without
 real provider files.
+
+## Showcase
+
+<p align="center">
+  <img src="assets/showcase.svg" width="500" alt="showcase">
+</p>
+
+<p align="center">
+  How it looks as of v0.3.6. I'll update this if anything major changes.
+</p>
