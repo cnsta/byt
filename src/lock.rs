@@ -1,7 +1,7 @@
 //! Single-instance enforcement via an advisory `flock` on a per-user lockfile.
 //!
 //! The lock is released automatically when the returned [`LockGuard`] is
-//! dropped or when the process exits — including crashes — because the kernel
+//! dropped or when the process exits, including crashes, because the kernel
 //! drops file locks on close.
 
 use std::fs::{File, OpenOptions};

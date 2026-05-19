@@ -38,6 +38,14 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
         ])
         .await?;
     }
+    nmcli(&[
+        "connection",
+        "modify",
+        desired_name,
+        "connection.autoconnect",
+        "no",
+    ])
+    .await?;
     Ok(())
 }
 
