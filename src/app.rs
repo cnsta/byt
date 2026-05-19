@@ -6,9 +6,11 @@
 
 use std::path::PathBuf;
 
+use crate::config::{self, Config};
 use iced::event::{self, Status};
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
+use iced::widget::toggler;
 use iced::widget::{Space, button, column, container, row, scrollable, stack, svg, text};
 use iced::{Color, Element, Event, Length, Subscription, Task, Theme};
 
@@ -29,6 +31,7 @@ pub struct App {
     selected: usize,
     pending: Option<String>,
     status: Option<String>,
+    config: Config,
     confirming_delete: Option<Connection>,
     scroll_offset: scrollable::AbsoluteOffset,
     scroll_viewport_height: f32,
@@ -50,12 +53,16 @@ pub enum Message {
     ConfirmDelete,
     CancelDelete,
     Scrolled(scrollable::Viewport),
+    ToggleQuitOnSwitch(bool),
+    ActivationDone(Result<String, String>),
     Quit,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Message>) {
-        (Self::default(), Task::done(Message::Refresh))
+        let mut app = Self::default();
+        app.config = config::load();
+        (app, Task::done(Message::Refresh))
     }
 
     pub fn title(&self) -> String {
@@ -82,6 +89,12 @@ impl App {
             }
             Message::SnapshotReady(Err(err)) => {
                 self.status = Some(format!("error: {err}"));
+                Task::none()
+            }
+
+            Message::ToggleQuitOnSwitch(value) => {
+                self.config.quit_on_switch = value;
+                config::save(&self.config);
                 Task::none()
             }
 
@@ -129,8 +142,26 @@ impl App {
                             .map(|()| name)
                             .map_err(|e| e.to_string())
                     },
-                    Message::OperationDone,
+                    Message::ActivationDone,
                 )
+            }
+
+            Message::ActivationDone(result) => {
+                self.pending = None;
+                match result {
+                    Ok(msg) => {
+                        self.status = Some(msg);
+                        if self.config.quit_on_switch {
+                            iced::exit()
+                        } else {
+                            Task::done(Message::Refresh)
+                        }
+                    }
+                    Err(err) => {
+                        self.status = Some(format!("error: {err}"));
+                        Task::done(Message::Refresh)
+                    }
+                }
             }
 
             Message::Disconnect => {
@@ -273,6 +304,12 @@ impl App {
                 .width(Length::Fixed(56.0))
                 .height(Length::Fixed(30.0)),
             Space::new().width(Length::Fill),
+            toggler(self.config.quit_on_switch)
+                .label("Quit on Switch™")
+                .text_size(12)
+                .size(16)
+                .on_toggle(Message::ToggleQuitOnSwitch),
+            Space::new().width(Length::Fixed(12.0)),
             icon_button(ICON_IMPORT, Message::StartImport, is_busy),
             icon_button(ICON_DISCONNECT, Message::Disconnect, is_busy),
             icon_button(ICON_REFRESH, Message::Refresh, false),

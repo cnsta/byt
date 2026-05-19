@@ -7,6 +7,7 @@
 
 mod app;
 mod cli;
+mod config;
 mod error;
 mod lock;
 mod vpn;
