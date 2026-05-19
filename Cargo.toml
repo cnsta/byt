@@ -1,6 +1,6 @@
 [package]
 name = "byt"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 rust-version = "1.95"
 description = "A terminal-based VPN switcher for Linux (NetworkManager + Tailscale)"

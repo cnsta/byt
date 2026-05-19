@@ -47,8 +47,9 @@ byt --help
 | Key                | Action         |
 | ------------------ | -------------- |
 | `↑` `↓` or `k` `j` | move selection |
-| `d`                | disconnect     |
+| `x`                | disconnect     |
 | `i`                | import config  |
+| `d`                | delete config  |
 | `r`                | refresh        |
 | `q` or `Esc`       | quit           |
 
