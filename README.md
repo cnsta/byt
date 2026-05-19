@@ -84,7 +84,7 @@ real provider files.
 ## Showcase
 
 <p align="center">
-  <img src="assets/showcase.svg" width="564" alt="showcase">
+  <img src="assets/showcase.png" width="500" alt="showcase">
 </p>
 
 <p align="center">
