@@ -495,12 +495,12 @@ fn confirm_delete_view<'a>(name: &'a str) -> Element<'a, Message> {
             text("Delete connection?").size(20),
             text(format!("\"{name}\" will be removed permanently.")).size(14),
             row![
-                button(text("No").size(14))
-                    .padding([8, 16])
-                    .on_press(Message::CancelDelete),
                 button(text("Yes").size(14))
                     .padding([8, 16])
                     .on_press(Message::ConfirmDelete),
+                button(text("No").size(14))
+                    .padding([8, 16])
+                    .on_press(Message::CancelDelete),
             ]
             .spacing(12),
         ]
