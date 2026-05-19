@@ -353,6 +353,15 @@ fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
         Key::Named(Named::Enter) => Some(Message::ActivateSelected),
         Key::Named(Named::Escape) => Some(Message::Quit),
         Key::Character(c) => match c {
+            "1" => Some(Message::SelectIndex(0)),
+            "2" => Some(Message::SelectIndex(1)),
+            "3" => Some(Message::SelectIndex(2)),
+            "4" => Some(Message::SelectIndex(3)),
+            "5" => Some(Message::SelectIndex(4)),
+            "6" => Some(Message::SelectIndex(5)),
+            "7" => Some(Message::SelectIndex(6)),
+            "8" => Some(Message::SelectIndex(7)),
+            "9" => Some(Message::SelectIndex(8)),
             "k" => Some(Message::SelectPrev),
             "j" => Some(Message::SelectNext),
             "x" => Some(Message::Disconnect),
@@ -437,8 +446,13 @@ fn connection_row<'a>(
         .map(|d| format!("{}  ·  {d}", kind_label(c.kind)))
         .unwrap_or_else(|| kind_label(c.kind).to_owned());
 
-    let pending_marker: Element<'_, Message> = if pending {
-        text("…").size(16).into()
+    let trailing: Element<'_, Message> = if pending {
+        text("…").size(18).into()
+    } else if index < 9 {
+        text(format!("{}", index + 1))
+            .size(11)
+            .color(Color::from_rgb(0.5, 0.5, 0.5))
+            .into()
     } else {
         Space::new().into()
     };
@@ -447,7 +461,7 @@ fn connection_row<'a>(
         text(mark).color(mark_color).size(16),
         column![text(&c.name).size(14), text(detail).size(11)].spacing(1),
         Space::new().width(Length::Fill),
-        pending_marker,
+        trailing,
     ]
     .spacing(10)
     .padding([8, 12])
