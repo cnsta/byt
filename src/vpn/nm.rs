@@ -192,6 +192,25 @@ pub async fn changes() -> Result<BoxStream<'static, ()>> {
     Ok(select_all(streams).boxed())
 }
 
+pub async fn delete(connection_id: &str) -> Result<()> {
+    let bus = zbus::Connection::system().await?;
+    let settings = SettingsProxy::new(&bus).await?;
+    let path = find_path_by_id(&bus, &settings, connection_id).await?;
+
+    let cs = ConnectionSettingsProxy::builder(&bus)
+        .path(path)?
+        .build()
+        .await?;
+
+    // Delete() on the Connection settings object. If the connection is
+    // currently active, NM deactivates it as part of the delete.
+    let _: Option<()> = cs
+        .inner()
+        .call_with_flags("Delete", MethodFlags::AllowInteractiveAuth.into(), &())
+        .await?;
+    Ok(())
+}
+
 // helpers
 
 /// Returns the set of object paths (under `/.../Settings/{N}`) that are

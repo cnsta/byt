@@ -49,4 +49,7 @@ pub enum Error {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("{kind} connections cannot be deleted from byt")]
+    CannotDelete { kind: &'static str },
 }

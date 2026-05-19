@@ -169,6 +169,15 @@ pub async fn disconnect() -> Result<()> {
     Ok(())
 }
 
+pub async fn delete(target: &Connection) -> Result<()> {
+    match target.kind {
+        VpnKind::Tailscale => Err(Error::CannotDelete {
+            kind: target.kind.as_str(),
+        }),
+        VpnKind::WireGuard | VpnKind::OpenVpn => nm::delete(&target.name).await,
+    }
+}
+
 async fn bring_up(c: &Connection) -> Result<()> {
     match c.kind {
         VpnKind::Tailscale => tailscale::start().await,

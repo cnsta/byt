@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use iced::event::{self, Status};
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
-use iced::widget::{Space, button, column, container, row, scrollable, svg, text};
+use iced::widget::{Space, button, column, container, row, scrollable, stack, svg, text};
 use iced::{Color, Element, Event, Length, Subscription, Task, Theme};
 
 use crate::vpn::{self, Connection, ConnectionState, Snapshot, VpnKind};
@@ -23,9 +23,9 @@ const ICON_REFRESH: &[u8] = include_bytes!("../assets/refresh.svg");
 pub struct App {
     snapshot: Snapshot,
     selected: usize,
-    /// Name of the connection currently being acted on (activate/deactivate).
     pending: Option<String>,
     status: Option<String>,
+    confirming_delete: Option<Connection>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +40,9 @@ pub enum Message {
     StartImport,
     FileChosen(Option<PathBuf>),
     OperationDone(Result<String, String>),
-
+    StartDelete,
+    ConfirmDelete,
+    CancelDelete,
     Quit,
 }
 
@@ -104,6 +106,9 @@ impl App {
                 if conn.state == ConnectionState::Unavailable {
                     self.status = Some(format!("{} is unavailable", conn.name));
                     return Task::none();
+                }
+                if self.confirming_delete.is_some() {
+                    return Task::done(Message::ConfirmDelete);
                 }
                 self.pending = Some(conn.name.clone());
                 let conn = conn.clone();
@@ -185,18 +190,63 @@ impl App {
                 Task::done(Message::Refresh)
             }
 
-            Message::Quit => iced::exit(),
+            Message::StartDelete => {
+                if self.pending.is_some() || self.confirming_delete.is_some() {
+                    return Task::none();
+                }
+                let Some(conn) = self.snapshot.connections.get(self.selected).cloned() else {
+                    return Task::none();
+                };
+                if conn.kind == VpnKind::Tailscale {
+                    self.status = Some("Tailscale is not a NetworkManager connection".into());
+                    return Task::none();
+                }
+                self.confirming_delete = Some(conn);
+                Task::none()
+            }
+
+            Message::ConfirmDelete => {
+                let Some(target) = self.confirming_delete.take() else {
+                    return Task::none();
+                };
+                let name = target.name.clone();
+                self.pending = Some(format!("deleting {name}"));
+                Task::perform(
+                    async move {
+                        vpn::delete(&target)
+                            .await
+                            .map(|()| format!("deleted `{name}`"))
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::OperationDone,
+                )
+            }
+
+            Message::CancelDelete => {
+                self.confirming_delete = None;
+                Task::none()
+            }
+            Message::Quit => {
+                if self.confirming_delete.is_some() {
+                    self.confirming_delete = None;
+                    return Task::none();
+                }
+                iced::exit()
+            }
         }
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let is_dialog_open = self.confirming_delete.is_some();
+        let is_busy = self.pending.is_some() || is_dialog_open;
+
         let header = row![
             svg(svg::Handle::from_memory(LOGO_BYTES))
                 .width(Length::Fixed(56.0))
                 .height(Length::Fixed(30.0)),
             Space::new().width(Length::Fill),
-            icon_button(ICON_IMPORT, Message::StartImport, self.pending.is_some()),
-            icon_button(ICON_DISCONNECT, Message::Disconnect, self.pending.is_some()),
+            icon_button(ICON_IMPORT, Message::StartImport, is_busy),
+            icon_button(ICON_DISCONNECT, Message::Disconnect, is_busy),
             icon_button(ICON_REFRESH, Message::Refresh, false),
         ]
         .spacing(8)
@@ -223,17 +273,28 @@ impl App {
         };
 
         let hint = self.status.clone().unwrap_or_else(|| {
-            "↑/↓ or j/k select • (d)isconnect • (i)mport • (r)efresh • (q)uit".to_owned()
+            if is_dialog_open {
+                "y/Enter confirm • n/Esc cancel".to_owned()
+            } else {
+                "↑/↓ select • (d)elete • (x)disconnect • (i)mport • (r)efresh • (q)uit".to_owned()
+            }
         });
 
         let footer = container(text(hint).size(13))
             .padding(10)
             .width(Length::Fill);
 
-        container(column![header, body, footer].spacing(0))
+        let main: Element<'_, Message> = container(column![header, body, footer].spacing(0))
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        if let Some(target) = &self.confirming_delete {
+            let dialog = confirm_delete_view(&target.name);
+            stack![main, dialog].into()
+        } else {
+            main
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -264,9 +325,12 @@ fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
         Key::Character(c) => match c {
             "k" => Some(Message::SelectPrev),
             "j" => Some(Message::SelectNext),
-            "d" => Some(Message::Disconnect),
+            "x" => Some(Message::Disconnect),
             "i" => Some(Message::StartImport),
             "r" => Some(Message::Refresh),
+            "d" => Some(Message::StartDelete),
+            "y" | "Y" => Some(Message::ConfirmDelete),
+            "n" | "N" => Some(Message::CancelDelete),
             "q" => Some(Message::Quit),
             "c" if modifiers.control() => Some(Message::Quit),
             _ => None,
@@ -423,4 +487,51 @@ fn row_button_style(theme: &Theme, status: button::Status, selected: bool) -> bu
         border: iced::Border::default(),
         ..button::Style::default()
     }
+}
+
+fn confirm_delete_view<'a>(name: &'a str) -> Element<'a, Message> {
+    let card = container(
+        column![
+            text("Delete connection?").size(20),
+            text(format!("\"{name}\" will be removed permanently.")).size(14),
+            row![
+                button(text("No").size(14))
+                    .padding([8, 16])
+                    .on_press(Message::CancelDelete),
+                button(text("Yes").size(14))
+                    .padding([8, 16])
+                    .on_press(Message::ConfirmDelete),
+            ]
+            .spacing(12),
+        ]
+        .spacing(16)
+        .align_x(iced::Alignment::Center),
+    )
+    .padding(24)
+    .max_width(360)
+    .style(|theme: &Theme| {
+        let palette = theme.extended_palette();
+        container::Style {
+            background: Some(palette.background.base.color.into()),
+            border: iced::Border {
+                radius: 8.0.into(),
+                width: 1.0,
+                color: palette.background.strong.color,
+            },
+            ..container::Style::default()
+        }
+    });
+
+    // Backdrop: dims the underlying view and absorbs stray clicks. Clicking
+    // outside the card cancels — standard modal UX.
+    iced::widget::mouse_area(
+        container(card)
+            .center(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(iced::Color::from_rgba(0.0, 0.0, 0.0, 0.5).into()),
+                ..container::Style::default()
+            }),
+    )
+    .on_press(Message::CancelDelete)
+    .into()
 }
