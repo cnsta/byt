@@ -19,6 +19,10 @@ const ICON_IMPORT: &[u8] = include_bytes!("../assets/import.svg");
 const ICON_DISCONNECT: &[u8] = include_bytes!("../assets/disconnect.svg");
 const ICON_REFRESH: &[u8] = include_bytes!("../assets/refresh.svg");
 
+fn scroll_id() -> iced::widget::Id {
+    iced::widget::Id::new("connections")
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     snapshot: Snapshot,
@@ -26,6 +30,8 @@ pub struct App {
     pending: Option<String>,
     status: Option<String>,
     confirming_delete: Option<Connection>,
+    scroll_offset: scrollable::AbsoluteOffset,
+    scroll_viewport_height: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +49,7 @@ pub enum Message {
     StartDelete,
     ConfirmDelete,
     CancelDelete,
+    Scrolled(scrollable::Viewport),
     Quit,
 }
 
@@ -80,20 +87,22 @@ impl App {
 
             Message::SelectPrev => {
                 self.selected = self.selected.saturating_sub(1);
-                Task::none()
+                self.ensure_selected_visible()
             }
+
             Message::SelectNext => {
                 let max = self.snapshot.connections.len().saturating_sub(1);
                 if self.selected < max {
                     self.selected += 1;
                 }
-                Task::none()
+                self.ensure_selected_visible()
             }
+
             Message::SelectIndex(i) => {
                 if i < self.snapshot.connections.len() {
                     self.selected = i;
                 }
-                Task::none()
+                self.ensure_selected_visible()
             }
 
             Message::ActivateSelected => {
@@ -226,6 +235,13 @@ impl App {
                 self.confirming_delete = None;
                 Task::none()
             }
+
+            Message::Scrolled(viewport) => {
+                self.scroll_offset = viewport.absolute_offset();
+                self.scroll_viewport_height = viewport.bounds().height;
+                Task::none()
+            }
+
             Message::Quit => {
                 if self.confirming_delete.is_some() {
                     self.confirming_delete = None;
@@ -234,6 +250,18 @@ impl App {
                 iced::exit()
             }
         }
+    }
+
+    fn ensure_selected_visible(&self) -> Task<Message> {
+        let total = self.snapshot.connections.len();
+        if total <= 1 {
+            return Task::none();
+        }
+        let ratio = (self.selected as f32 / (total - 1) as f32).clamp(0.0, 1.0);
+        iced::widget::operation::snap_to(
+            scroll_id(),
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: ratio },
+        )
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -268,6 +296,8 @@ impl App {
                     )
                 },
             )))
+            .id(scroll_id())
+            .on_scroll(Message::Scrolled)
             .height(Length::Fill)
             .into()
         };
@@ -408,23 +438,24 @@ fn connection_row<'a>(
         .unwrap_or_else(|| kind_label(c.kind).to_owned());
 
     let pending_marker: Element<'_, Message> = if pending {
-        text("…").size(20).into()
+        text("…").size(16).into()
     } else {
         Space::new().into()
     };
 
     let inner = row![
-        text(mark).color(mark_color).size(22),
-        column![text(&c.name).size(16), text(detail).size(12)].spacing(2),
+        text(mark).color(mark_color).size(16),
+        column![text(&c.name).size(14), text(detail).size(11)].spacing(1),
         Space::new().width(Length::Fill),
         pending_marker,
     ]
-    .spacing(12)
-    .padding(10)
+    .spacing(10)
+    .padding([8, 12])
     .align_y(iced::Alignment::Center);
 
     container(
         button(inner)
+            .padding(0)
             .on_press(Message::SelectIndex(index))
             .style(move |theme: &Theme, status| row_button_style(theme, status, selected))
             .width(Length::Fill),
