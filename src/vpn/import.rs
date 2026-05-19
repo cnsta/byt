@@ -22,12 +22,10 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
 
     nmcli(&["connection", "import", "type", plugin, "file", &path_str]).await?;
 
-    // nmcli names the connection after the file's stem; rename if needed.
     let imported = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(desired_name);
-
     if imported != desired_name {
         nmcli(&[
             "connection",
@@ -38,6 +36,8 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
         ])
         .await?;
     }
+
+    // disable autoconnect
     nmcli(&[
         "connection",
         "modify",
@@ -46,6 +46,10 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
         "no",
     ])
     .await?;
+
+    // disconnect from imported config, this is my personal desired behavior
+    let _ = nmcli(&["connection", "down", desired_name]).await;
+
     Ok(())
 }
 
