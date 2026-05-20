@@ -87,6 +87,6 @@ real provider files.
   <img src="assets/showcase.png" width="500" alt="showcase">
 </p>
 
-<p align="center">
-  _How it looks as of v0.4.0. I'll update this if anything major changes._
-</p>
+<p align="center"><i>
+  How it looks as of v0.4.0. I'll update this if anything major changes.
+</i></p>
