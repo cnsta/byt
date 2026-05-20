@@ -88,5 +88,5 @@ real provider files.
 </p>
 
 <p align="center">
-  How it looks as of v0.3.6. I'll update this if anything major changes.
+  _How it looks as of v0.4.0. I'll update this if anything major changes._
 </p>
