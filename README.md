@@ -11,9 +11,10 @@
 `byt` swaps between NetworkManager-managed VPNs (WireGuard, OpenVPN) and
 Tailscale from a small Iced GUI or the command line.
 
-> [!WARNING]
-> Very much expect bugs. I rarely use OpenVPN for example, so it's minimally
-> tested. Feel free to contribute if you find anything wrong.
+> [!NOTE]
+> This is a very new project, you might stumble upon some bugs. I rarely use
+> OpenVPN for example, so it's minimally tested. Feel free to contribute if you
+> find anything wrong.
 
 ## Features
 
@@ -88,5 +89,5 @@ real provider files.
 </p>
 
 <p align="center"><i>
-  How it looks as of v0.4.0. I'll update this if anything major changes.
+  How it looks as of v0.4.0.
 </i></p>
