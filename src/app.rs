@@ -47,7 +47,7 @@ pub enum Message {
     ActivateSelected,
     Disconnect,
     StartImport,
-    FileChosen(Option<PathBuf>),
+    FilesChosen(Vec<PathBuf>),
     OperationDone(Result<String, String>),
     StartDelete,
     ConfirmDelete,
@@ -192,38 +192,29 @@ impl App {
                 Task::perform(
                     async {
                         rfd::AsyncFileDialog::new()
-                            .set_title("Import VPN configuration")
+                            .set_title("Import VPN configurations")
                             .add_filter("VPN configs", &["conf", "ovpn"])
                             .add_filter("All files", &["*"])
-                            .pick_file()
+                            .pick_files()
                             .await
-                            .map(|h| h.path().to_path_buf())
+                            .map(|handles| {
+                                handles.iter().map(|h| h.path().to_path_buf()).collect()
+                            })
+                            .unwrap_or_default()
                     },
-                    Message::FileChosen,
+                    Message::FilesChosen,
                 )
             }
 
-            Message::FileChosen(None) => Task::none(),
-            Message::FileChosen(Some(path)) => {
-                self.pending = Some(format!("importing {}", path.display()));
-                Task::perform(
-                    async move {
-                        let kind = vpn::detect_config_kind(&path).map_err(|e| e.to_string())?;
-                        let suggested = match kind {
-                            vpn::ConfigKind::WireGuard => vpn::wireguard::parse_conf(&path)
-                                .map_err(|e| e.to_string())?
-                                .suggested_name(),
-                            vpn::ConfigKind::OpenVpn => vpn::openvpn::parse_conf(&path)
-                                .map_err(|e| e.to_string())?
-                                .suggested_name(),
-                        };
-                        vpn::import::import(kind, &path, &suggested)
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        Ok(format!("imported `{suggested}`"))
-                    },
-                    Message::OperationDone,
-                )
+            Message::FilesChosen(paths) => {
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                self.pending = Some(match paths.as_slice() {
+                    [one] => format!("importing {}", one.display()),
+                    many => format!("importing {} configs", many.len()),
+                });
+                Task::perform(import_files(paths), Message::OperationDone)
             }
 
             Message::OperationDone(result) => {
@@ -386,6 +377,77 @@ fn keyboard_subscription() -> Subscription<Message> {
             None
         }
     })
+}
+
+/// Import a batch of config files sequentially, skipping names that already
+/// exist as NetworkManager connections (`nmcli connection import` would
+/// otherwise happily create duplicates with the same id).
+async fn import_files(paths: Vec<PathBuf>) -> Result<String, String> {
+    let mut existing: std::collections::HashSet<String> = match vpn::nm::list().await {
+        Ok(list) => list.into_iter().map(|c| c.name).collect(),
+        Err(err) => {
+            tracing::warn!(%err, "could not list existing connections; skip-check disabled");
+            std::collections::HashSet::new()
+        }
+    };
+
+    let total = paths.len();
+    let mut imported = 0_usize;
+    let mut skipped = 0_usize;
+    let mut failures: Vec<String> = Vec::new();
+    let mut last_name = String::new();
+
+    for path in paths {
+        let label = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map_or_else(|| path.display().to_string(), ToOwned::to_owned);
+
+        match vpn::import::preview_name(&path) {
+            Ok((_, name)) if existing.contains(&name) => skipped += 1,
+            Ok((kind, name)) => match vpn::import::import(kind, &path, &name).await {
+                Ok(()) => {
+                    imported += 1;
+                    // Also catches duplicate names *within* the batch.
+                    existing.insert(name.clone());
+                    last_name = name;
+                }
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), %err, "import failed");
+                    failures.push(first_line(&format!("{label}: {err}")));
+                }
+            },
+            Err(err) => {
+                tracing::warn!(path = %path.display(), %err, "could not parse config");
+                failures.push(first_line(&format!("{label}: {err}")));
+            }
+        }
+    }
+
+    let mut parts = Vec::new();
+    if imported > 0 {
+        parts.push(if imported == 1 && total == 1 {
+            format!("imported `{last_name}`")
+        } else {
+            format!("imported {imported}")
+        });
+    }
+    if skipped > 0 {
+        parts.push(format!("skipped {skipped} existing"));
+    }
+    if !failures.is_empty() {
+        parts.push(format!("{} failed — {}", failures.len(), failures[0]));
+    }
+    if parts.is_empty() {
+        parts.push("nothing to import".to_owned());
+    }
+
+    let msg = parts.join(" • ");
+    if failures.is_empty() { Ok(msg) } else { Err(msg) }
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).to_owned()
 }
 
 fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {

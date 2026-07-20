@@ -20,12 +20,14 @@ pub enum Command {
     /// Print current VPN state and exit.
     Status,
 
-    /// Import a WireGuard `.conf` file as a NetworkManager connection.
+    /// Import WireGuard/OpenVPN config files as NetworkManager connections.
     Import {
-        /// Path to the `.conf` file.
-        path: PathBuf,
+        /// Paths to the config files (one or more).
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
 
-        /// Connection name. Defaults to the file stem.
+        /// Connection name. Defaults to the file stem. Only valid when
+        /// importing a single file.
         #[arg(short, long)]
         name: Option<String>,
     },

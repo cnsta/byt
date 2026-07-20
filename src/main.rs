@@ -13,7 +13,7 @@ mod lock;
 mod vpn;
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use color_eyre::eyre::WrapErr;
@@ -30,7 +30,7 @@ fn main() -> color_eyre::Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => run_gui(),
         Command::Status => block_on(run_status()),
-        Command::Import { path, name } => block_on(run_import(path, name)),
+        Command::Import { paths, name } => block_on(run_import(paths, name)),
     }
 }
 
@@ -63,17 +63,36 @@ async fn run_status() -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn run_import(path: PathBuf, name: Option<String>) -> color_eyre::Result<()> {
-    let kind = vpn::detect_config_kind(&path)
+async fn run_import(paths: Vec<PathBuf>, name: Option<String>) -> color_eyre::Result<()> {
+    if name.is_some() && paths.len() > 1 {
+        color_eyre::eyre::bail!("--name only makes sense when importing a single file");
+    }
+
+    let total = paths.len();
+    let mut failed = 0_usize;
+    for path in &paths {
+        if let Err(err) = import_single(path, name.clone()).await {
+            failed += 1;
+            eprintln!("✗ {}: {err:#}", path.display());
+        }
+    }
+    if failed > 0 {
+        color_eyre::eyre::bail!("{failed} of {total} imports failed");
+    }
+    Ok(())
+}
+
+async fn import_single(path: &Path, name: Option<String>) -> color_eyre::Result<()> {
+    let kind = vpn::detect_config_kind(path)
         .wrap_err_with(|| format!("could not identify {}", path.display()))?;
 
     let (preview_str, suggested, auth_user_pass) = match kind {
         ConfigKind::WireGuard => {
-            let p = vpn::wireguard::parse_conf(&path)?;
+            let p = vpn::wireguard::parse_conf(path)?;
             (p.to_string(), p.suggested_name(), false)
         }
         ConfigKind::OpenVpn => {
-            let p = vpn::openvpn::parse_conf(&path)?;
+            let p = vpn::openvpn::parse_conf(path)?;
             let auth = p.auth_user_pass;
             (p.to_string(), p.suggested_name(), auth)
         }
@@ -81,7 +100,7 @@ async fn run_import(path: PathBuf, name: Option<String>) -> color_eyre::Result<(
 
     print!("{preview_str}");
     let connection_name = name.unwrap_or(suggested);
-    vpn::import::import(kind, &path, &connection_name).await?;
+    vpn::import::import(kind, path, &connection_name).await?;
     println!("✓ imported `{connection_name}` ({})", kind.as_str());
 
     if auth_user_pass {

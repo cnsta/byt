@@ -13,6 +13,18 @@ use crate::vpn::ConfigKind;
 
 const NMCLI: &str = "nmcli";
 
+/// Detect the config type of `path` and derive the connection name it would
+/// import as (the file stem, for both formats). Cheap: reads the file, runs
+/// nothing.
+pub fn preview_name(path: &Path) -> Result<(ConfigKind, String)> {
+    let kind = crate::vpn::detect_config_kind(path)?;
+    let name = match kind {
+        ConfigKind::WireGuard => crate::vpn::wireguard::parse_conf(path)?.suggested_name(),
+        ConfigKind::OpenVpn => crate::vpn::openvpn::parse_conf(path)?.suggested_name(),
+    };
+    Ok((kind, name))
+}
+
 pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result<()> {
     let plugin = match kind {
         ConfigKind::WireGuard => "wireguard",
