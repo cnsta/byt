@@ -5,6 +5,7 @@
 //! need elevation and the local API socket isn't a stable third-party interface.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 use tokio::process::Command;
@@ -124,14 +125,29 @@ async fn start_unit() -> Result<()> {
     Ok(())
 }
 
-/// `tailscale up` with no config flags: resumes the connection with the
-/// saved prefs (the CLI special-cases the flag-less form, so this never
-/// alters settings). Requires root or operator rights on the socket.
+/// How long to let `tailscale up` run before giving up on it.
+const UP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// `tailscale up` with no flags at all. The CLI only takes its "simple up"
+/// path — resume with saved prefs, don't touch settings — when *zero* flags
+/// are given. Passing any flag, even a non-pref one like `--timeout`, routes
+/// it through the settings-diff check, which then errors unless every
+/// non-default pref (`--accept-routes`, `--login-server`, …) is restated.
+/// So the timeout lives out here instead, and `kill_on_drop` reaps the child
+/// if we bail. Requires root or operator rights on the socket.
 async fn tailscale_up() -> Result<()> {
-    let output = Command::new(TAILSCALE)
-        .args(["up", "--timeout=10s"])
-        .output()
+    let run = Command::new(TAILSCALE)
+        .arg("up")
+        .kill_on_drop(true)
+        .output();
+
+    let output = tokio::time::timeout(UP_TIMEOUT, run)
         .await
+        .map_err(|_| Error::CommandFailed {
+            cmd: format!("{TAILSCALE} up"),
+            status: -1,
+            stderr: format!("timed out after {}s", UP_TIMEOUT.as_secs()),
+        })?
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Error::MissingExecutable(TAILSCALE),
             _ => Error::Io(e),
