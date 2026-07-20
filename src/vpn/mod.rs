@@ -4,7 +4,7 @@
 //! - [`Connection`], [`ConnectionState`], [`VpnKind`], [`ConfigKind`] —
 //!   data the UI renders.
 //! - [`snapshot`] — query current state across all backends.
-//! - [`activate_exclusive`] — bring one connection up, ensuring others are down.
+//! - [`toggle_exclusive`] — toggle one connection, ensuring others are down.
 //! - [`disconnect`] — tear everything down.
 //! - [`detect_config_kind`] — sniff WireGuard vs OpenVPN from a config file.
 
@@ -131,7 +131,25 @@ pub async fn snapshot() -> Result<Snapshot> {
     Ok(Snapshot { connections })
 }
 
-pub async fn activate_exclusive(target: &Connection) -> Result<()> {
+/// Outcome of [`toggle_exclusive`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Toggled {
+    /// The target connection was brought up.
+    Up,
+    /// The target connection was brought down.
+    Down,
+}
+
+/// Toggle one connection, ensuring mutual exclusion.
+///
+/// If the target is currently down, every other active connection is brought
+/// down and the target is brought up. If the target is already up, it is
+/// brought down instead (along with any strays), so the bound key acts as a
+/// connect/disconnect toggle.
+///
+/// The decision is based on a fresh [`snapshot`], not on `target.state`,
+/// which may be stale UI state.
+pub async fn toggle_exclusive(target: &Connection) -> Result<Toggled> {
     if target.state == ConnectionState::Unavailable {
         return Err(Error::Unavailable {
             kind: target.kind.as_str(),
@@ -139,16 +157,9 @@ pub async fn activate_exclusive(target: &Connection) -> Result<()> {
     }
 
     let snap = snapshot().await?;
-    let exclusive = snap.connections.iter().all(|c| {
-        if c.name == target.name && c.kind == target.kind {
-            c.state == ConnectionState::Active
-        } else {
-            c.state != ConnectionState::Active
-        }
+    let target_active = snap.connections.iter().any(|c| {
+        c.name == target.name && c.kind == target.kind && c.state == ConnectionState::Active
     });
-    if exclusive {
-        return Ok(());
-    }
 
     for c in &snap.connections {
         if (c.name == target.name && c.kind == target.kind) || c.state != ConnectionState::Active {
@@ -156,7 +167,14 @@ pub async fn activate_exclusive(target: &Connection) -> Result<()> {
         }
         bring_down(c).await?;
     }
-    bring_up(target).await
+
+    if target_active {
+        bring_down(target).await?;
+        Ok(Toggled::Down)
+    } else {
+        bring_up(target).await?;
+        Ok(Toggled::Up)
+    }
 }
 
 pub async fn disconnect() -> Result<()> {

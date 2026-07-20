@@ -52,4 +52,7 @@ pub enum Error {
 
     #[error("{kind} connections cannot be deleted from byt")]
     CannotDelete { kind: &'static str },
+
+    #[error("tailscale is logged out; run `tailscale up` in a terminal to authenticate")]
+    TailscaleNeedsLogin,
 }

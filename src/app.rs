@@ -119,6 +119,11 @@ impl App {
             }
 
             Message::ActivateSelected => {
+                // The delete dialog owns Enter while it's open, regardless of
+                // what's selected underneath it.
+                if self.confirming_delete.is_some() {
+                    return Task::done(Message::ConfirmDelete);
+                }
                 if self.pending.is_some() {
                     return Task::none();
                 }
@@ -129,17 +134,17 @@ impl App {
                     self.status = Some(format!("{} is unavailable", conn.name));
                     return Task::none();
                 }
-                if self.confirming_delete.is_some() {
-                    return Task::done(Message::ConfirmDelete);
-                }
                 self.pending = Some(conn.name.clone());
                 let conn = conn.clone();
                 Task::perform(
                     async move {
                         let name = conn.name.clone();
-                        vpn::activate_exclusive(&conn)
+                        vpn::toggle_exclusive(&conn)
                             .await
-                            .map(|()| name)
+                            .map(|toggled| match toggled {
+                                vpn::Toggled::Up => format!("connected `{name}`"),
+                                vpn::Toggled::Down => format!("disconnected `{name}`"),
+                            })
                             .map_err(|e| e.to_string())
                     },
                     Message::ActivationDone,

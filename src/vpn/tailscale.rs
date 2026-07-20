@@ -56,34 +56,61 @@ pub async fn status() -> Result<Connection> {
         });
     }
 
-    let active = is_unit_active().await.unwrap_or(false);
+    let unit_active = is_unit_active().await.unwrap_or(false);
 
-    let detail = if active {
+    // `tailscaled.service` being active only means the daemon is running —
+    // on most installs it runs from boot, always. Whether the VPN is up is
+    // the backend state: `tailscale down`, a fresh install, and a logged-out
+    // node all leave the daemon active with a state other than "Running".
+    let (state, detail) = if unit_active {
         match tailscale_status_json().await {
-            Ok(json) if json.backend_state == "Running" => json.magic_dns_suffix,
-            Ok(_) => None,
+            Ok(json) => match json.backend_state.as_str() {
+                "Running" => (ConnectionState::Active, json.magic_dns_suffix),
+                "NeedsLogin" | "NeedsMachineAuth" => (
+                    ConnectionState::Inactive,
+                    Some("logged out — run `tailscale up`".to_owned()),
+                ),
+                _ => (ConnectionState::Inactive, None),
+            },
             Err(err) => {
                 tracing::warn!(?err, "tailscale status --json failed");
-                None
+                (ConnectionState::Inactive, None)
             }
         }
     } else {
-        None
+        (ConnectionState::Inactive, None)
     };
 
     Ok(Connection {
         name: "Tailscale".to_owned(),
         kind: VpnKind::Tailscale,
-        state: if active {
-            ConnectionState::Active
-        } else {
-            ConnectionState::Inactive
-        },
+        state,
         detail,
     })
 }
 
 pub async fn start() -> Result<()> {
+    if !is_unit_active().await.unwrap_or(false) {
+        // Daemon is down — this is the state byt's own `stop` leaves behind.
+        // Starting the unit restores the saved prefs (incl. WantRunning), so
+        // the node reconnects on its own.
+        return start_unit().await;
+    }
+
+    // Daemon already running: `StartUnit` on an active unit is a no-op, so
+    // the connection has to come up through the local API instead.
+    match tailscale_status_json().await.map(|j| j.backend_state) {
+        Ok(state) if state == "Running" => Ok(()),
+        Ok(state) if state == "NeedsLogin" || state == "NeedsMachineAuth" => {
+            Err(Error::TailscaleNeedsLogin)
+        }
+        // "Stopped" (i.e. after `tailscale down`), or status query failed:
+        // try `tailscale up` and let its stderr explain any failure.
+        _ => tailscale_up().await,
+    }
+}
+
+async fn start_unit() -> Result<()> {
     let bus = zbus::Connection::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
     let _: Option<OwnedObjectPath> = mgr
@@ -95,6 +122,34 @@ pub async fn start() -> Result<()> {
         )
         .await?;
     Ok(())
+}
+
+/// `tailscale up` with no config flags: resumes the connection with the
+/// saved prefs (the CLI special-cases the flag-less form, so this never
+/// alters settings). Requires root or operator rights on the socket.
+async fn tailscale_up() -> Result<()> {
+    let output = Command::new(TAILSCALE)
+        .args(["up", "--timeout=10s"])
+        .output()
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::MissingExecutable(TAILSCALE),
+            _ => Error::Io(e),
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.contains("Access denied") {
+        stderr.push_str("\nhint: grant yourself operator rights: sudo tailscale set --operator=$USER");
+    }
+    Err(Error::CommandFailed {
+        cmd: format!("{TAILSCALE} up"),
+        status: output.status.code().unwrap_or(-1),
+        stderr,
+    })
 }
 
 pub async fn stop() -> Result<()> {

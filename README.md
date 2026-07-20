@@ -45,14 +45,15 @@ byt --help
 
 ### Keys
 
-| Key                | Action         |
-| ------------------ | -------------- |
-| `↑` `↓` or `k` `j` | move selection |
-| `x`                | disconnect     |
-| `i`                | import config  |
-| `d`                | delete config  |
-| `r`                | refresh        |
-| `q` or `Esc`       | quit           |
+| Key                | Action               |
+| ------------------ | -------------------- |
+| `↑` `↓` or `k` `j` | move selection       |
+| `Enter`            | connect / disconnect |
+| `x`                | disconnect all       |
+| `i`                | import config        |
+| `d`                | delete config        |
+| `r`                | refresh              |
+| `q` or `Esc`       | quit                 |
 
 ## Install
 
