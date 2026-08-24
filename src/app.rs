@@ -197,9 +197,7 @@ impl App {
                             .add_filter("All files", &["*"])
                             .pick_files()
                             .await
-                            .map(|handles| {
-                                handles.iter().map(|h| h.path().to_path_buf()).collect()
-                            })
+                            .map(|handles| handles.iter().map(|h| h.path().to_path_buf()).collect())
                             .unwrap_or_default()
                     },
                     Message::FilesChosen,
@@ -443,7 +441,11 @@ async fn import_files(paths: Vec<PathBuf>) -> Result<String, String> {
     }
 
     let msg = parts.join(" • ");
-    if failures.is_empty() { Ok(msg) } else { Err(msg) }
+    if failures.is_empty() {
+        Ok(msg)
+    } else {
+        Err(msg)
+    }
 }
 
 fn first_line(s: &str) -> String {

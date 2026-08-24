@@ -48,6 +48,14 @@ fn run_gui() -> color_eyre::Result<()> {
         .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(app::App::theme)
+        .window(iced::window::Settings {
+            size: iced::Size::new(600.0, 400.0),
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: "dev.cnst.byt".to_owned(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .run()
         .wrap_err("iced failed to start")?;
 
