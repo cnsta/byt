@@ -629,7 +629,13 @@ fn row_button_style(theme: &Theme, status: button::Status, selected: bool) -> bu
         palette.background.base.color
     };
     let bg = match status {
-        button::Status::Hovered | button::Status::Pressed => palette.background.weak.color,
+        button::Status::Hovered | button::Status::Pressed => {
+            if selected {
+                palette.background.strong.color
+            } else {
+                palette.background.weak.color
+            }
+        }
         _ => base,
     };
     button::Style {
