@@ -71,26 +71,14 @@ async fn run_status() -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn run_import(paths: Vec<PathBuf>, name: Option<String>) -> color_eyre::Result<()> {
-    if name.is_some() && paths.len() > 1 {
-        color_eyre::eyre::bail!("--name only makes sense when importing a single file");
-    }
-
-    let total = paths.len();
-    let mut failed = 0_usize;
-    for path in &paths {
-        if let Err(err) = import_single(path, name.clone()).await {
-            failed += 1;
-            eprintln!("✗ {}: {err:#}", path.display());
-        }
-    }
-    if failed > 0 {
-        color_eyre::eyre::bail!("{failed} of {total} imports failed");
-    }
-    Ok(())
+struct ImportPreview {
+    path: PathBuf,
+    kind: ConfigKind,
+    connection_name: String,
+    auth_user_pass: bool,
 }
 
-async fn import_single(path: &Path, name: Option<String>) -> color_eyre::Result<()> {
+fn preview(path: &Path, name: Option<String>) -> color_eyre::Result<ImportPreview> {
     let kind = vpn::detect_config_kind(path)
         .wrap_err_with(|| format!("could not identify {}", path.display()))?;
 
@@ -107,16 +95,65 @@ async fn import_single(path: &Path, name: Option<String>) -> color_eyre::Result<
     };
 
     print!("{preview_str}");
-    let connection_name = name.unwrap_or(suggested);
-    vpn::import::import(kind, path, &connection_name).await?;
-    println!("✓ imported `{connection_name}` ({})", kind.as_str());
+    Ok(ImportPreview {
+        path: path.to_path_buf(),
+        kind,
+        connection_name: name.unwrap_or(suggested),
+        auth_user_pass,
+    })
+}
 
-    if auth_user_pass {
-        println!();
-        println!("This config uses `auth-user-pass`. Set credentials before activating:");
-        println!("  nmcli connection modify {connection_name} vpn.user-name '<username>'");
-        println!("  nmcli connection modify {connection_name} +vpn.data password-flags=0");
-        println!("  nmcli connection modify {connection_name} vpn.secrets password='<password>'");
+async fn run_import(paths: Vec<PathBuf>, name: Option<String>) -> color_eyre::Result<()> {
+    if name.is_some() && paths.len() > 1 {
+        color_eyre::eyre::bail!("--name only makes sense when importing a single file");
+    }
+    let total = paths.len();
+
+    let mut previews: Vec<Option<ImportPreview>> = Vec::new();
+    for path in &paths {
+        match preview(path, name.clone()) {
+            Ok(p) => previews.push(Some(p)),
+            Err(err) => {
+                eprintln!("✗ {}: {err:#}", path.display());
+                previews.push(None);
+            }
+        }
+    }
+
+    let outcomes = futures::future::join_all(previews.into_iter().map(|entry| async move {
+        match entry {
+            None => None,
+            Some(p) => {
+                let result = vpn::import::import(p.kind, &p.path, &p.connection_name).await;
+                Some((p, result))
+            }
+        }
+    }))
+    .await;
+
+    let mut failed = 0_usize;
+    for outcome in outcomes {
+        match outcome {
+            None => failed += 1,
+            Some((p, Ok(()))) => {
+                println!("✓ imported `{}` ({})", p.connection_name, p.kind.as_str());
+                if p.auth_user_pass {
+                    println!();
+                    println!(
+                        "This config uses `auth-user-pass`. Set credentials before activating:"
+                    );
+                    println!("{}", error::secrets_hint(&p.connection_name));
+                }
+            }
+            Some((p, Err(err))) => {
+                failed += 1;
+                eprintln!("✗ {}: {err:#}", p.path.display());
+            }
+        }
+    }
+
+    if failed > 0 {
+        color_eyre::eyre::bail!("{failed} of {total} imports failed");
     }
     Ok(())
 }
