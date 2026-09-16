@@ -8,6 +8,7 @@
 //! - [`disconnect`] — tear everything down.
 //! - [`detect_config_kind`] — sniff WireGuard vs OpenVPN from a config file.
 
+mod dbus;
 pub mod import;
 pub mod nm;
 pub mod openvpn;
@@ -161,12 +162,10 @@ pub async fn toggle_exclusive(target: &Connection) -> Result<Toggled> {
         c.name == target.name && c.kind == target.kind && c.state == ConnectionState::Active
     });
 
-    for c in &snap.connections {
-        if (c.name == target.name && c.kind == target.kind) || c.state != ConnectionState::Active {
-            continue;
-        }
-        bring_down(c).await?;
-    }
+    let others = snap.connections.iter().filter(|c| {
+        !(c.name == target.name && c.kind == target.kind) && c.state == ConnectionState::Active
+    });
+    bring_down_all(others).await?;
 
     if target_active {
         bring_down(target).await?;
@@ -179,12 +178,41 @@ pub async fn toggle_exclusive(target: &Connection) -> Result<Toggled> {
 
 pub async fn disconnect() -> Result<()> {
     let snap = snapshot().await?;
-    for c in &snap.connections {
-        if c.state == ConnectionState::Active {
-            bring_down(c).await?;
-        }
+    bring_down_all(
+        snap.connections
+            .iter()
+            .filter(|c| c.state == ConnectionState::Active),
+    )
+    .await
+}
+
+async fn bring_down_all<'a, I>(targets: I) -> Result<()>
+where
+    I: IntoIterator<Item = &'a Connection>,
+{
+    let results = futures::future::join_all(
+        targets
+            .into_iter()
+            .map(|c| async move { (c.name.clone(), bring_down(c).await) }),
+    )
+    .await;
+    aggregate_bring_down_errors(results)
+}
+
+fn aggregate_bring_down_errors(results: Vec<(String, Result<()>)>) -> Result<()> {
+    let failures: Vec<(String, Error)> = results
+        .into_iter()
+        .filter_map(|(name, r)| r.err().map(|e| (name, e)))
+        .collect();
+    if failures.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let details = failures
+        .iter()
+        .map(|(name, err)| format!("  {name}: {err}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(Error::BringDownFailed(details))
 }
 
 pub async fn delete(target: &Connection) -> Result<()> {
@@ -207,5 +235,31 @@ async fn bring_down(c: &Connection) -> Result<()> {
     match c.kind {
         VpnKind::Tailscale => tailscale::stop().await,
         VpnKind::WireGuard | VpnKind::OpenVpn => nm::deactivate(&c.name).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregates_all_ok_as_ok() {
+        let results = vec![("a".to_owned(), Ok(())), ("b".to_owned(), Ok(()))];
+        assert!(aggregate_bring_down_errors(results).is_ok());
+    }
+
+    #[test]
+    fn aggregates_mixed_results_into_one_error_mentioning_all_failures() {
+        let results = vec![
+            ("a".to_owned(), Ok(())),
+            ("b".to_owned(), Err(Error::NotFound("b".to_owned()))),
+            (
+                "c".to_owned(),
+                Err(Error::CannotDelete { kind: "tailscale" }),
+            ),
+        ];
+        let err = aggregate_bring_down_errors(results).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("b:") && msg.contains("c:") && !msg.contains("a:"));
     }
 }
