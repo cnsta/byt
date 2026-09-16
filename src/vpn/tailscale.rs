@@ -11,9 +11,10 @@ use serde::Deserialize;
 use tokio::process::Command;
 use zbus::proxy;
 use zbus::proxy::MethodFlags;
-use zbus::zvariant::{ObjectPath, OwnedObjectPath};
+use zbus::zvariant::OwnedObjectPath;
 
 use crate::error::{Error, Result};
+use crate::vpn::dbus;
 use crate::vpn::{Connection, ConnectionState, VpnKind};
 
 const SERVICE: &str = "tailscaled.service";
@@ -112,7 +113,7 @@ pub async fn start() -> Result<()> {
 }
 
 async fn start_unit() -> Result<()> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
     let _: Option<OwnedObjectPath> = mgr
         .inner()
@@ -159,7 +160,9 @@ async fn tailscale_up() -> Result<()> {
 
     let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.contains("Access denied") {
-        stderr.push_str("\nhint: grant yourself operator rights: sudo tailscale set --operator=$USER");
+        stderr.push_str(
+            "\nhint: grant yourself operator rights: sudo tailscale set --operator=$USER",
+        );
     }
     Err(Error::CommandFailed {
         cmd: format!("{TAILSCALE} up"),
@@ -169,7 +172,7 @@ async fn tailscale_up() -> Result<()> {
 }
 
 pub async fn stop() -> Result<()> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
     let _: Option<OwnedObjectPath> = mgr
         .inner()
@@ -183,7 +186,7 @@ pub async fn stop() -> Result<()> {
 }
 
 async fn is_unit_active() -> Result<bool> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let mgr = SystemdManagerProxy::new(&bus).await?;
 
     // GetUnit returns the loaded unit's object path, or a dbus error if the
@@ -227,6 +230,3 @@ async fn tailscale_status_json() -> Result<StatusJson> {
 
     Ok(serde_json::from_slice(&output.stdout)?)
 }
-
-#[allow(dead_code)]
-fn _force_unused_object_path_use(_p: ObjectPath<'_>) {}
