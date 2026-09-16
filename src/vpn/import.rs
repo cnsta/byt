@@ -31,13 +31,14 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
         ConfigKind::OpenVpn => "openvpn",
     };
     let path_str = path.to_string_lossy();
+    let import_args = ["connection", "import", "type", plugin, "file", &path_str];
 
-    nmcli(&["connection", "import", "type", plugin, "file", &path_str]).await?;
+    let stdout = nmcli(&import_args).await?;
+    let imported = parse_imported_name(&stdout).ok_or_else(|| Error::UnexpectedNmcliOutput {
+        cmd: format!("{NMCLI} {}", import_args.join(" ")),
+        output: stdout.clone(),
+    })?;
 
-    let imported = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(desired_name);
     if imported != desired_name {
         nmcli(&[
             "connection",
@@ -65,9 +66,18 @@ pub async fn import(kind: ConfigKind, path: &Path, desired_name: &str) -> Result
     Ok(())
 }
 
+fn parse_imported_name(stdout: &str) -> Option<&str> {
+    let line = stdout.lines().find(|l| l.contains("successfully added"))?;
+    let start = line.find('\'')? + 1;
+    let rest = &line[start..];
+    let end = rest.find('\'')?;
+    Some(&rest[..end])
+}
+
 async fn nmcli(args: &[&str]) -> Result<String> {
     let output = Command::new(NMCLI)
         .args(args)
+        .env("LC_ALL", "C")
         .output()
         .await
         .map_err(|e| match e.kind() {
@@ -83,4 +93,26 @@ async fn nmcli(args: &[&str]) -> Result<String> {
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_typical_success_line() {
+        let out = "Connection 'my-wg' (3b2f1c9e-uuid) successfully added.\n";
+        assert_eq!(parse_imported_name(out), Some("my-wg"));
+    }
+
+    #[test]
+    fn parses_name_containing_spaces() {
+        let out = "Connection 'My VPN Config' (uuid) successfully added.\n";
+        assert_eq!(parse_imported_name(out), Some("My VPN Config"));
+    }
+
+    #[test]
+    fn returns_none_on_unexpected_output() {
+        assert_eq!(parse_imported_name("nmcli: unrecognized option\n"), None);
+    }
 }
