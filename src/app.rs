@@ -377,9 +377,6 @@ fn keyboard_subscription() -> Subscription<Message> {
     })
 }
 
-/// Import a batch of config files sequentially, skipping names that already
-/// exist as NetworkManager connections (`nmcli connection import` would
-/// otherwise happily create duplicates with the same id).
 async fn import_files(paths: Vec<PathBuf>) -> Result<String, String> {
     let mut existing: std::collections::HashSet<String> = match vpn::nm::list().await {
         Ok(list) => list.into_iter().map(|c| c.name).collect(),
@@ -390,34 +387,42 @@ async fn import_files(paths: Vec<PathBuf>) -> Result<String, String> {
     };
 
     let total = paths.len();
-    let mut imported = 0_usize;
     let mut skipped = 0_usize;
     let mut failures: Vec<String> = Vec::new();
-    let mut last_name = String::new();
+    let mut to_import: Vec<(PathBuf, vpn::ConfigKind, String)> = Vec::new();
 
     for path in paths {
-        let label = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map_or_else(|| path.display().to_string(), ToOwned::to_owned);
-
         match vpn::import::preview_name(&path) {
             Ok((_, name)) if existing.contains(&name) => skipped += 1,
-            Ok((kind, name)) => match vpn::import::import(kind, &path, &name).await {
-                Ok(()) => {
-                    imported += 1;
-                    // Also catches duplicate names *within* the batch.
-                    existing.insert(name.clone());
-                    last_name = name;
-                }
-                Err(err) => {
-                    tracing::warn!(path = %path.display(), %err, "import failed");
-                    failures.push(first_line(&format!("{label}: {err}")));
-                }
-            },
+            Ok((kind, name)) => {
+                existing.insert(name.clone());
+                to_import.push((path, kind, name));
+            }
             Err(err) => {
                 tracing::warn!(path = %path.display(), %err, "could not parse config");
-                failures.push(first_line(&format!("{label}: {err}")));
+                failures.push(first_line(&format!("{}: {err}", import_label(&path))));
+            }
+        }
+    }
+
+    let results =
+        futures::future::join_all(to_import.into_iter().map(|(path, kind, name)| async move {
+            let result = vpn::import::import(kind, &path, &name).await;
+            (path, name, result)
+        }))
+        .await;
+
+    let mut imported = 0_usize;
+    let mut last_name = String::new();
+    for (path, name, result) in results {
+        match result {
+            Ok(()) => {
+                imported += 1;
+                last_name = name;
+            }
+            Err(err) => {
+                tracing::warn!(path = %path.display(), %err, "import failed");
+                failures.push(first_line(&format!("{}: {err}", import_label(&path))));
             }
         }
     }
@@ -450,6 +455,12 @@ async fn import_files(paths: Vec<PathBuf>) -> Result<String, String> {
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).to_owned()
+}
+
+fn import_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map_or_else(|| path.display().to_string(), ToOwned::to_owned)
 }
 
 fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
