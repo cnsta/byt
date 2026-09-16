@@ -13,13 +13,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use futures::StreamExt;
 use futures::stream::{BoxStream, select_all};
-use futures::{Stream, StreamExt};
 use zbus::proxy;
 use zbus::proxy::MethodFlags;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
 use crate::error::{Error, Result};
+use crate::vpn::dbus;
 use crate::vpn::{Connection, ConnectionState, VpnKind};
 
 const OPENVPN_SERVICE_SUFFIX: &str = ".openvpn";
@@ -86,21 +87,16 @@ trait ActiveConnection {
 // public API
 
 pub async fn list() -> Result<Vec<Connection>> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let nm = NetworkManagerProxy::new(&bus).await?;
     let settings = SettingsProxy::new(&bus).await?;
 
     let active_obj_paths = active_connection_paths(&bus, &nm).await?;
     let conn_paths = settings.list_connections().await?;
+    let all_settings = get_settings_batch(&bus, &conn_paths).await?;
 
     let mut out = Vec::new();
-    for path in conn_paths {
-        let cs = ConnectionSettingsProxy::builder(&bus)
-            .path(path.clone())?
-            .build()
-            .await?;
-        let s = cs.get_settings().await?;
-
+    for (path, s) in conn_paths.into_iter().zip(all_settings) {
         let Some(kind) = classify(&s) else { continue };
 
         let id = get_str(&s, "connection", "id")
@@ -123,7 +119,7 @@ pub async fn list() -> Result<Vec<Connection>> {
 }
 
 pub async fn activate(connection_id: &str) -> Result<()> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let nm = NetworkManagerProxy::new(&bus).await?;
     let settings = SettingsProxy::new(&bus).await?;
 
@@ -149,7 +145,7 @@ pub async fn activate(connection_id: &str) -> Result<()> {
 }
 
 pub async fn deactivate(connection_id: &str) -> Result<()> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let nm = NetworkManagerProxy::new(&bus).await?;
 
     for ac_path in nm.active_connections().await? {
@@ -174,7 +170,7 @@ pub async fn deactivate(connection_id: &str) -> Result<()> {
 
 /// Stream that emits `()` whenever something NM-side might have changed.
 pub async fn changes() -> Result<BoxStream<'static, ()>> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let nm = NetworkManagerProxy::new(&bus).await?;
     let settings = SettingsProxy::new(&bus).await?;
 
@@ -193,7 +189,7 @@ pub async fn changes() -> Result<BoxStream<'static, ()>> {
 }
 
 pub async fn delete(connection_id: &str) -> Result<()> {
-    let bus = zbus::Connection::system().await?;
+    let bus = dbus::system().await?;
     let settings = SettingsProxy::new(&bus).await?;
     let path = find_path_by_id(&bus, &settings, connection_id).await?;
 
@@ -221,18 +217,18 @@ async fn active_connection_paths(
     bus: &zbus::Connection,
     nm: &NetworkManagerProxy<'_>,
 ) -> Result<HashSet<OwnedObjectPath>> {
-    let mut out = HashSet::new();
-    for ac_path in nm.active_connections().await? {
-        let ac = ActiveConnectionProxy::builder(bus)
-            .path(ac_path)?
-            .build()
-            .await?;
-        // If the active connection vanished between our two calls, just skip it.
-        if let Ok(cp) = ac.connection().await {
-            out.insert(cp);
-        }
-    }
-    Ok(out)
+    let paths = futures::future::try_join_all(nm.active_connections().await?.into_iter().map(
+        |ac_path| async move {
+            let ac = ActiveConnectionProxy::builder(bus)
+                .path(ac_path)?
+                .build()
+                .await?;
+            // If the active connection vanished between our two calls, just skip it.
+            Ok::<_, Error>(ac.connection().await.ok())
+        },
+    ))
+    .await?;
+    Ok(paths.into_iter().flatten().collect())
 }
 
 async fn find_path_by_id(
@@ -240,17 +236,28 @@ async fn find_path_by_id(
     settings: &SettingsProxy<'_>,
     id: &str,
 ) -> Result<OwnedObjectPath> {
-    for path in settings.list_connections().await? {
+    let paths = settings.list_connections().await?;
+    let all_settings = get_settings_batch(bus, &paths).await?;
+    paths
+        .into_iter()
+        .zip(all_settings)
+        .find(|(_, s)| get_str(s, "connection", "id") == Some(id))
+        .map(|(path, _)| path)
+        .ok_or_else(|| Error::NotFound(id.to_owned()))
+}
+
+async fn get_settings_batch(
+    bus: &zbus::Connection,
+    paths: &[OwnedObjectPath],
+) -> Result<Vec<HashMap<String, HashMap<String, OwnedValue>>>> {
+    futures::future::try_join_all(paths.iter().map(|path| async move {
         let cs = ConnectionSettingsProxy::builder(bus)
             .path(path.clone())?
             .build()
             .await?;
-        let s = cs.get_settings().await?;
-        if get_str(&s, "connection", "id") == Some(id) {
-            return Ok(path);
-        }
-    }
-    Err(Error::NotFound(id.to_owned()))
+        Ok::<_, Error>(cs.get_settings().await?)
+    }))
+    .await
 }
 
 fn classify(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<VpnKind> {
@@ -278,14 +285,4 @@ fn get_str<'a>(
 fn looks_like_secrets_error(err: &zbus::Error) -> bool {
     let msg = err.to_string();
     msg.contains("Secrets") || msg.contains("secret")
-}
-
-// public re-export for the change-stream subscription
-
-#[allow(dead_code)]
-pub fn into_message_stream<M, F>(stream: BoxStream<'static, ()>, mut f: F) -> impl Stream<Item = M>
-where
-    F: FnMut() -> M + 'static,
-{
-    stream.map(move |()| f())
 }
