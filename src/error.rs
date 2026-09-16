@@ -30,12 +30,7 @@ pub enum Error {
     #[error("connection `{0}` not found")]
     NotFound(String),
 
-    #[error(
-        "activation needs secrets that aren't stored. Set them with:\n  \
-         nmcli connection modify '{name}' vpn.user-name '<username>'\n  \
-         nmcli connection modify '{name}' +vpn.data password-flags=0\n  \
-         nmcli connection modify '{name}' vpn.secrets password='<password>'"
-    )]
+    #[error("activation needs secrets that aren't stored. Set them with:\n{}", secrets_hint(.name))]
     SecretsRequired { name: String },
 
     #[error("{kind} backend is not available on this system")]
@@ -55,4 +50,21 @@ pub enum Error {
 
     #[error("tailscale is logged out; run `tailscale up` in a terminal to authenticate")]
     TailscaleNeedsLogin,
+
+    #[error(
+        "could not find the connection name nmcli reported for `{cmd}` in its output: {output:?}"
+    )]
+    UnexpectedNmcliOutput { cmd: String, output: String },
+
+    #[error("failed to bring down some connections:\n{0}")]
+    BringDownFailed(String),
+}
+
+#[must_use]
+pub fn secrets_hint(name: &str) -> String {
+    format!(
+        "  nmcli connection modify '{name}' vpn.user-name '<username>'\n  \
+         nmcli connection modify '{name}' +vpn.data password-flags=0\n  \
+         nmcli connection modify '{name}' vpn.secrets password='<password>'"
+    )
 }
