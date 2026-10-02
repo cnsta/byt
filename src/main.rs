@@ -25,6 +25,7 @@ use crate::vpn::ConfigKind;
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     init_tracing();
+    raise_fd_limit();
 
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Run) {
@@ -156,6 +157,20 @@ async fn run_import(paths: Vec<PathBuf>, name: Option<String>) -> color_eyre::Re
         color_eyre::eyre::bail!("{failed} of {total} imports failed");
     }
     Ok(())
+}
+
+fn raise_fd_limit() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft, hard)) if soft < hard => {
+            if let Err(err) = setrlimit(Resource::RLIMIT_NOFILE, hard, hard) {
+                tracing::warn!("could not raise the open-file limit from {soft}: {err}");
+            }
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!("could not read the open-file limit: {err}"),
+    }
 }
 
 fn init_tracing() {
